@@ -1,0 +1,137 @@
+
+Root: (sub)
+    A:
+        type:   state
+        next:
+            - if time > 200 then B
+            - if A/B then C
+        sub:
+            A:
+                type: state
+                next: B
+            B:
+                type: state
+                next: A
+        start: [ A always]
+    B:
+        type: state
+        next:
+            - if time > 5 then A
+        sub:
+            A:
+                type: state
+                next: B
+                sub:
+                    A:
+                        type: state
+                        next: B
+                    B:
+                        type: state
+                        next: A
+                start:  [ B first ]
+    C:
+        type: state
+        next: 
+            - if random > 0.95 and A then A
+
+
+Alt 1
+execState: func [ S ]
+    n: S/next()
+    if n 
+        run S/out()
+        run n/in()
+        return n
+    return S
+
+run: func [ machine ]
+    S: init
+    forever 
+        S: execState( S)
+
+Alt 2
+execState: func [ S ]
+    n: S/next()
+    if n 
+        run S/out()
+        S: n
+        run S/in()
+    return S
+
+Alt 3
+execState: func [ S ]
+    n: S/next()
+    if n 
+        run S/out()
+        return n
+    return none
+
+run: func [ machine ]
+    S: init
+    forever 
+        n: execState( S)
+        if n 
+            S: n
+            run S/in()
+
+Expanding this into hierachy:
+            
+Alt 1
+execState: func [ S ]
+    n: S/next()
+    if n 
+        run S/out()
+        run n/in()
+        return n
+    return S
+
+run: func [ machine ]
+    S: init
+    forever 
+        S: execState( S)
+
+================================
+machine has states  of which are themselves machines
+activeState:
+update machine
+
+machine: make object! [
+    states: [ S1 S2 S3 ]
+    activeState: S1
+    in: func [ ] [ ;  This is for internal use. The script "user" script is "entry"
+        if entry [ do entry ]
+        ; Set up the substates for being run
+        activeState/in
+    ]
+    out: func [ ][
+        activeState/out
+        if exit [ do exit ]
+    ]
+    entry: [ What need to be done on entry ]
+    exit: [ What need to be done on exit ]
+    update: func [][
+        newState: activeState/next
+        if newState [
+            ; make sure activeState is handling the exit of substates
+            activeState/in
+            activeState: newState
+            activeState/out
+        ]
+        activeState/update
+    ]
+]
+
+
+
+================================
+    
+runState; func [ here below] ; B/A B
+    s: statepath/1
+    rest: next statepath
+    loop sc in s/next
+        if n: sc/next() :
+            if 
+            
+        
+
+
