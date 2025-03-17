@@ -15,25 +15,26 @@ machine!: make object! [
 	out: func [ ][
 		print [ "Exit state" full-name self ]
 		all  [ active-state active-state/out ]
-		all [ states	do on-exit ]
+		all [ on-exit	do on-exit ]
 	]
 	on-entry: [ print ["Running on-entry of " full-name self ] ]
 	on-exit: [ print ["Running on-exit of " full-name self ] ]
 	update: func [][
 		unless active-state [ return none]  ; it's a leaf
 
-		;Start by updateing the children
-		;The children should be updated first otgherwise it is a risk they won't be initialized
-		active-state/update
 
 		new-state: active-state/transition
 		print [ "State" full-name active-state "transfer to" all [ new-state full-name new-state ] ]
-		if new-state [
+		either new-state [
 			; make sure active-state is handling the on-exit of substates
 			active-state/out
 			active-state: new-state
 			active-state/in
+			return true
+		][
+			return active-state/update
 		]
+		
 	]
 	start-state: 'blub  ; add the state it should initially transit to
 	_start-state: none  ; will be the actual state used for restarting, should not be touched
@@ -109,33 +110,45 @@ add-states: func [
 	]
 ]
 	
+prepare-machine: func [ machine ] [
+	print ["Fixing machine" machine/name ]
+	if block? machine/states [
+		foreach state machine/states [
+			prepare-machine state
+		]
+	]
+]
 
-main: make machine! [ name: "root" ]
+root: make machine! [ name: "root" ]
 
 	S1: make machine! [
 		name: 'S1
-		transition: func [] [ S2 ]
+		transition: func [] [ if 0.1 > random 1.0 [ S2] ]
 	]
 		S1a: make machine! [
 			name: 'S1a
-			transition: func [] [ S1b ]
+			transition: func [] [ if 0.1 > random 1.0 [ S1b] ]
 		]
 		S1b: make machine! [
 			name: 'S1b
-			transition: func [] [ S1a ]
+			transition: func [] [ if 0.1 > random 1.0 [ S1c] ]
+		]
+		S1c: make machine! [
+			name: 'S1c
+			transition: func [] [ if 0.1 > random 1.0 [ S1a] ]
 		]
 	S2: make machine! [
 		name: 'S2
-		transition: func [] [ S1 ]
+		transition: func [] [ if 0.1 > random 1.0 [ S1] ]
 	]
 
 		S2a: make machine! [
 			name: 'S2a
-			transition: func [] [ S2b ]
+			transition: func [] [ if 0.1 > random 1.0 [ S2b] ]
 		]
 		S2b: make machine! [
 			name: 'S2b
-			transition: func [] [ S2a ]
+			transition: func [] [ if 0.1 > random 1.0 [ S2a] ]
 		]
 
 add-states/initial S1 reduce [ S1a S1b ]
@@ -143,12 +156,13 @@ add-states/initial S1 reduce [ S1a S1b ]
 add-states/initial S2 reduce [ S2a S2b ]
 
 
-add-states main reduce [ S1 S2 ]
+add-states root reduce [ S1 S2 ]
 make-initial S1
 
-;main/update
+prepare-machine root
+;root/update
 ;S1/update
 
-print main/to-string
+print root/to-string
 
 ; vim: sw=4 ts=4 noexpandtab syntax=rebol:
