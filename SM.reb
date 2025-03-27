@@ -36,13 +36,11 @@ machine!: make object! [
 		]
 		
 	]
-	start-state: 'blub  ; add the state it should initially transit to
+	start-state: none  ; add the state it should initially transit to
 	_start-state: none  ; will be the actual state used for restarting, should not be touched
 	transition: none ; a state in the same machine for now
 	parent: none
 
-	time-in-state: none
-	time-entered: none
 	to-string: func [ /level lvl /local pre result ] [
 		lvl: any [ lvl 0 ]
 		pre: copy "" loop lvl [ append pre tab ]
@@ -60,10 +58,10 @@ machine!: make object! [
 			]
 			foreach state states [
 				append result "  "
-				if state = start-state [ append result "*" ]
-				if state = active-state [ append result "->" ]
+				if states/:state = start-state [ append result "*" ]
+				if states/:state = active-state [ append result "->" ]
 			
-				append result state/to-string/level lvl + 2 
+				append result states/:state/to-string/level lvl + 2 
 			]
 		]
 		result
@@ -90,23 +88,22 @@ make-initial: func [
 	machine/active-state: machine/_start-state
 ]
 
-add-states: func [
+add-state: func [
 	{Add states to the the machine.
 	If /initial is given, the first of states will be the state it first transfers to.}
 	machine [object!]
-	states [object! block!]
+	name [ word! string! ]
+	state [object!]
 	/initial
 ][
-	states: append copy [] states
-	machine/states: any [ machine/states copy []]
-
-	append machine/states states
-
-	foreach s states [ s/parent: machine ]
-	states: head states
+	states: any [ machine/states object []]
+	repend states [ name state ]
+	machine/states: states
+	state/parent: machine
+	state/name: to-word name
 
 	if initial [
-		make-initial first states
+		make-initial state
 	]
 ]
 	
@@ -119,45 +116,40 @@ prepare-machine: func [ machine ] [
 	]
 ]
 
-root: make machine! [ name: "root" ]
+root: make machine! [ ]
 
 	S1: make machine! [
-		name: 'S1
 		transition: func [] [ if 0.1 > random 1.0 [ S2] ]
 	]
 		S1a: make machine! [
-			name: 'S1a
 			transition: func [] [ if 0.1 > random 1.0 [ S1b] ]
 		]
 		S1b: make machine! [
-			name: 'S1b
 			transition: func [] [ if 0.1 > random 1.0 [ S1c] ]
 		]
 		S1c: make machine! [
-			name: 'S1c
 			transition: func [] [ if 0.1 > random 1.0 [ S1a] ]
 		]
 	S2: make machine! [
-		name: 'S2
 		transition: func [] [ if 0.1 > random 1.0 [ S1] ]
 	]
 
 		S2a: make machine! [
-			name: 'S2a
 			transition: func [] [ if 0.1 > random 1.0 [ S2b] ]
 		]
 		S2b: make machine! [
-			name: 'S2b
 			transition: func [] [ if 0.1 > random 1.0 [ S2a] ]
 		]
 
-add-states/initial S1 reduce [ S1a S1b ]
+add-state/initial S1 'S1a S1a
+add-state S1 'S1b S1b
 
-add-states/initial S2 reduce [ S2a S2b ]
+add-state/initial S2 'S2a S2a
+add-state S2 'S2b S2b
 
 
-add-states root reduce [ S1 S2 ]
-make-initial S1
+add-state/initial root 'S1 S1
+add-state root 'S2 S2
 
 prepare-machine root
 ;root/update
