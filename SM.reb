@@ -34,20 +34,40 @@ REBOL [
 		That is all.
 
 		}
+	Have been working on is-path-top
+]
+the-state: func [
+	state [word! object!]
+	/exec method {Do the method of the object if it is a result}
+] [
+	if word? state [ state: get state ]
+	if exec [ return do to-path reduce [ 'state method ] ]
+	state
 ]
 
 machine!: make object! [
 	name: none
 	states: none
 	active-state: none
-	in-handler: func [ ] [ ;  This is for internal use. The script "user" script is "on-entry"
+	default-state: none
+	in-handler: func [  ;  This is for internal use. The script "user" script is "on-entry"
+		/local
+			the-active-state
+		][
 		all [ on-entry do on-entry ]
 		print ["Enter state" full-name self ]
-		all [ states  active-state/in-handler ]
+		if states [
+			the-state/exec active-state 'in-handler
+		]
 	]
-	out-handler: func [ ][
-		all  [ active-state active-state/out-handler ]
-		all [ on-exit	do on-exit ]
+	out-handler: func [
+		/local
+			the-active-state
+		][
+		the-state/exec active-state out-handler
+
+		all [ :on-exit	any [ all[ block? :on-exit do on-exit false ]  on-exit ] ]
+		active-state: default-state
 		print [ "Exit state" full-name self ]
 	]
 	on-entry: [] [ print ["Running on-entry of " full-name self ] ]
@@ -71,14 +91,17 @@ machine!: make object! [
 		return s
 	]
 
-	update: func [][
+	update: func [
+		/local new-state
+	][
 		unless active-state [ return none]  ; it's a leaf
 
-		new-state: active-state/transitions
+		new-state: do the-state active-state 'transitions
 		either new-state [
 			; new-state is a path or a word. If a word, it is a transition within the same machine.
 			; If a path, the first word is where the search for the new state is done
 			; Hence search upward and the first hit of the beginning of the path is used as base.
+			; Hm, how about a transition to a state below in the same machine?
 			either word? new-state [
 				? new-state
 				new-state: get-state new-state
@@ -89,7 +112,7 @@ machine!: make object! [
 				active-state/in-handler
 				return true
 			][
-				search-up new-state
+				find-path-top
 				throw "Found the new path"
 				return true
 			]
@@ -98,10 +121,42 @@ machine!: make object! [
 		]
 		
 	]
-	; what should SEARCH-UP really do.  Find the object is clear.
-	; but what should it do then.  From the code below it seems as it 
-	; wants to do the transition as well. That can't be right.
-	search-up: func [ goal ][
+	is-path-top: func [
+		{Checks if path is a direct part of machine.
+		Returns the leaf of the correct path or none
+		}
+		machine [object!]
+		path [word! path!]
+	][
+		path: to-path path
+		foreach p path [
+			found: false
+			foreach state machine/states [
+				? p 
+				? state
+				if  (the-state/exec state 'name) = p [
+					machine: get the-state/exec state 'name
+					found: machine
+					break
+				]
+			]
+			unless found [ break ]
+		]
+		return found
+	]
+
+	find-path-top: func [
+		goal [path!]
+		/local 
+	][
+		; Start searching in current machine and below
+		foreach states [ is-path-top this goal ]
+		
+	]
+
+
+
+	transit-up: func [ goal ][
 		print to-string
 		print [ "Found a path to search" name first goal ]
 		either in states first goal [
@@ -112,12 +167,14 @@ machine!: make object! [
 		][
 			out-handler
 			print "Leaving this level and searching parent"
-			parent/search-up goal
+			parent/transit-up goal
 		]
 	]
 
+[
 	start-state: none  ; add the state it should initially transit to
 	_start-state: none  ; will be the actual state used for restarting, should not be touched
+]
 	transitions: none ; a state in the same machine for now
 	parent: none
 
@@ -138,8 +195,8 @@ machine!: make object! [
 			]
 			foreach state states [
 				append result "  "
-				if states/:state = start-state [ append result "*" ]
-				if states/:state = active-state [ append result "->" ]
+				if states/:state = all [ default-state  the-state default-state] [ append result "*" ]
+				if states/:state = the-state active-state [ append result "->" ]
 			
 				append result states/:state/to-string/level lvl + 2 
 			]
@@ -148,23 +205,11 @@ machine!: make object! [
 	]
 ]
 
-machine!/_start-state: make machine! [ transitions: does [ parent/start-state ] name: 'the-starting-point ]
+; machine!/_start-state: make machine! [ transitions: does [ parent/start-state ] name: 'the-starting-point ]
 
 full-name: func [ state ][
 	unless state/parent [ return 'root ]
 	append to-path full-name state/parent state/name
-]
-
-; From here it is mainly convenicenc funcitons
-
-make-initial: func [
-	"Make the state the first state that is entered when machine is started"
-	machine [object!]
-	state [word! ]
-][
-	machine/start-state: state
-	machine/_start-state: make machine/_start-state [ parent: machine ]
-	machine/active-state: machine/_start-state
 ]
 
 add-state: func [
@@ -174,6 +219,7 @@ add-state: func [
 	name [ word! ]
 	state [object!]
 	/initial
+	/default
 ][
 	states: any [ machine/states object []]
 	repend states [ name state ]
@@ -182,7 +228,10 @@ add-state: func [
 	state/name: to-word name
 
 	if initial [
-		make-initial machine name
+		machine/active-state: name
+	]
+	if default [
+		machine/default-state: name
 	]
 ]
 	
@@ -237,6 +286,7 @@ add-state/initial root 'S1 S1
 add-state root 'S2 S2
 
 prepare-machine root
+root/in-handler
 ;root/update
 ;S1/update
 
