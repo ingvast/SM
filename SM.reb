@@ -34,7 +34,6 @@ REBOL [
 		That is all.
 
 		}
-	Have been working on is-path-top
 ]
 the-state: func [
 	state [word! object!]
@@ -54,22 +53,24 @@ machine!: make object! [
 		/local
 			the-active-state
 		][
-		all [ on-entry do on-entry ]
 		print ["Enter state" full-name self ]
+		all [ on-entry do on-entry ]
 		if states [
-			the-state/exec active-state 'in-handler
+			active-state/in-handler
 		]
 	]
 	out-handler: func [
+		{Recursively leaves all substates}
 		/local
 			the-active-state
-		][
-		the-state/exec active-state out-handler
+	][
+		all [ active-state active-state/out-handler ]
 
 		all [ :on-exit	any [ all[ block? :on-exit do on-exit false ]  on-exit ] ]
-		active-state: default-state
+		if default-state [ active-state: states/(default-state) ]
 		print [ "Exit state" full-name self ]
 	]
+
 	on-entry: [] [ print ["Running on-entry of " full-name self ] ]
 	on-exit: [] [ print ["Running on-exit of " full-name self ] ]
 
@@ -87,94 +88,62 @@ machine!: make object! [
 			]
 			s: stmp
 		]
-		;print [ "Found in path " full-name s]
 		return s
 	]
 
+	get-transition-defs: func [
+		from [path!]
+		to [path!]
+		/local branch
+	][
+		first+ from first+ to
+		branch: root
+		
+		while [ (first from) = (first to) ][
+			branch: branch/states/(first from)
+			from: next from
+			to: next to
+		]
+		object [
+			branch-state: branch
+			down: to
+		]
+	]
+		
+		
 	update: func [
 		/local new-state
 	][
 		unless active-state [ return none]  ; it's a leaf
 
-		new-state: do the-state active-state 'transitions
+		new-state: active-state/transitions
+
 		either new-state [
-			; new-state is a path or a word. If a word, it is a transition within the same machine.
-			; If a path, the first word is where the search for the new state is done
-			; Hence search upward and the first hit of the beginning of the path is used as base.
-			; Hm, how about a transition to a state below in the same machine?
-			either word? new-state [
-				? new-state
-				new-state: get-state new-state
-				print [ "State" full-name active-state "transfer to" all [ new-state full-name new-state ] ]
-				; make sure active-state is handling the on-exit of substates
-				active-state/out-handler
-				active-state: new-state
-				active-state/in-handler
-				return true
-			][
-				find-path-top
-				throw "Found the new path"
-				return true
+
+			? new-state
+			new-state: find-state self new-state
+
+			print [ "Transition from:" active-state/name "to:" new-state/name]
+
+			transition-defs: get-transition-defs full-name active-state full-name new-state
+
+			; Leave the active branch
+			machine: transition-defs/branch-state
+			machine/active-state/out-handler
+
+			; Mark the new branch active
+			foreach tran transition-defs/down [
+				print tran
+				machine: machine/active-state: machine/states/(tran)
 			]
+			; Get in to the new branch
+			active-state/in-handler
 		][
 			return active-state/update
 		]
 		
 	]
-	is-path-top: func [
-		{Checks if path is a direct part of machine.
-		Returns the leaf of the correct path or none
-		}
-		machine [object!]
-		path [word! path!]
-	][
-		path: to-path path
-		foreach p path [
-			found: false
-			foreach state machine/states [
-				? p 
-				? state
-				if  (the-state/exec state 'name) = p [
-					machine: get the-state/exec state 'name
-					found: machine
-					break
-				]
-			]
-			unless found [ break ]
-		]
-		return found
-	]
 
-	find-path-top: func [
-		goal [path!]
-		/local 
-	][
-		; Start searching in current machine and below
-		foreach states [ is-path-top this goal ]
-		
-	]
-
-
-
-	transit-up: func [ goal ][
-		print to-string
-		print [ "Found a path to search" name first goal ]
-		either in states first goal [
-			print "Found path"
-			goal: next goal
-			in-handler/aim goal
-			return 
-		][
-			out-handler
-			print "Leaving this level and searching parent"
-			parent/transit-up goal
-		]
-	]
-
-[
-	start-state: none  ; add the state it should initially transit to
-	_start-state: none  ; will be the actual state used for restarting, should not be touched
-]
 	transitions: none ; a state in the same machine for now
 	parent: none
 
@@ -204,12 +173,53 @@ machine!: make object! [
 		result
 	]
 ]
+find-state: func [
+	machine
+	name [path! word! object!]
+	/local 
+		result is-path-top 
+][
+	is-path-top: func [
+		{Checks if path is a direct part of machine.
+		Returns the leaf of the correct path or none
+		}
+		machine [object!]
+		path [word! path!]
+	][
+		path: to-path path
+		foreach p path [
+			found: false
+			foreach state machine/states [
+				if  (the-state/exec state 'name) = p [
+					machine: get the-state/exec state 'name
+					found: machine
+					break
+				]
+			]
+			unless found [ break ]
+		]
+		return found
+	]
+	if object? name [ return name ]
+	; Search order
+	; First that matches:
+	; 	- Any in this machine
+	;   - find-state of any each substate of this machine
+	;   - find-state of root	
+	; Start searching in current machine and below
+	name: to-path name
+	if result: is-path-top machine name [ return result ]
+	foreach state machine/states [
+		if result: find-state get state  name [ return result ]
+	]
+	return find-state root name
+]
 
 ; machine!/_start-state: make machine! [ transitions: does [ parent/start-state ] name: 'the-starting-point ]
 
 full-name: func [ state ][
-	unless state/parent [ return 'root ]
-	append to-path full-name state/parent state/name
+	unless state/parent [ return to-path 'root ]
+	append full-name state/parent state/name
 ]
 
 add-state: func [
@@ -228,7 +238,7 @@ add-state: func [
 	state/name: to-word name
 
 	if initial [
-		machine/active-state: name
+		machine/active-state: machine/states/(name)
 	]
 	if default [
 		machine/default-state: name
