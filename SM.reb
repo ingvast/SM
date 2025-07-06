@@ -35,6 +35,8 @@ REBOL [
 
 		}
 ]
+debug: false 
+
 the-state: func [
 	state [word! object!]
 	/exec method {Do the method of the object if it is a result}
@@ -42,6 +44,12 @@ the-state: func [
 	if word? state [ state: get state ]
 	if exec [ return do to-path reduce [ 'state method ] ]
 	state
+]
+
+on-entry-default: on-exit-default: none
+if debug [
+	on-entry-default: func [ state ] [ print [ "Entered state" full-name state ]]
+	on-exit-default: func [ state ] [ print [ "Exit state" full-name state ]]
 ]
 
 machine!: make object! [
@@ -53,8 +61,8 @@ machine!: make object! [
 		/local
 			the-active-state
 		][
-		print ["Enter state" full-name self ]
-		all [ on-entry do on-entry ]
+		;print ["Enter state" full-name self ]
+		all [ :on-entry do :on-entry self ]
 		if states [
 			active-state/in-handler
 		]
@@ -66,13 +74,14 @@ machine!: make object! [
 	][
 		all [ active-state active-state/out-handler ]
 
-		all [ :on-exit	any [ all[ block? :on-exit do on-exit false ]  on-exit ] ]
+		;all [ :on-exit	any [ all[ block? :on-exit do on-exit false ]  on-exit ] ]
+		all [ :on-exit do :on-exit self ]
 		if default-state [ active-state: states/(default-state) ]
-		print [ "Exit state" full-name self ]
+		;print [ "Exit state" full-name self ]
 	]
 
-	on-entry: [] [ print ["Running on-entry of " full-name self ] ]
-	on-exit: [] [ print ["Running on-exit of " full-name self ] ]
+	on-entry: :on-entry-default
+	on-exit: :on-exit-default
 
 	get-state: func [
 			path [word! path!]
@@ -89,25 +98,6 @@ machine!: make object! [
 			s: stmp
 		]
 		return s
-	]
-
-	get-transition-defs: func [
-		from [path!]
-		to [path!]
-		/local branch
-	][
-		first+ from first+ to
-		branch: root
-		
-		while [ (first from) = (first to) ][
-			branch: branch/states/(first from)
-			from: next from
-			to: next to
-		]
-		object [
-			branch-state: branch
-			down: to
-		]
 	]
 		
 		
@@ -133,7 +123,6 @@ machine!: make object! [
 
 			; Mark the new branch active
 			foreach tran transition-defs/down [
-				print tran
 				machine: machine/active-state: machine/states/(tran)
 			]
 			; Get in to the new branch
@@ -144,35 +133,78 @@ machine!: make object! [
 		
 	]
 
+	full-state-path: func [
+		{Returns the full path to the active inner part of the machine}
+	][
+		return append
+			to-path name
+			any [ all [ active-state active-state/full-state-path ] to-path []]
+	]
+
 	transitions: none ; a state in the same machine for now
 	parent: none
 
 	to-string: func [ /level lvl /local pre result ] [
+		sep: "  "
+		l-string: func [ o ][
+			case [
+				function? :o [ return rejoin [ "func" mold spec-of :o mold body-of :o ]]
+				block? :o [ return mold o ]
+			]
+		]
 		lvl: any [ lvl 0 ]
-		pre: copy "" loop lvl [ append pre tab ]
+		pre: copy "" loop lvl [ append pre sep ]
 		result: rejoin [
 			pre any [ name "root" ] ":" newline
-			pre tab "on-entry:" tab mold on-entry newline
-			pre tab "on-exit:" tab mold on-entry newline
+			pre sep "on-entry:" " " l-string :on-entry newline
+			pre sep "on-exit:" " " l-string :on-exit newline
 		]
 		if  :transitions  [
-			append result rejoin [ pre tab "transitions:" tab mold body-of :transitions newline ]
+			append result rejoin [ pre sep "transitions:" " " mold body-of :transitions newline ]
 		]
 		if states [
 			append result rejoin [
-				pre tab "states:" newline 
+				pre sep "states:" newline 
 			]
 			foreach state states [
-				append result "  "
-				if states/:state = all [ default-state  the-state default-state] [ append result "*" ]
-				if states/:state = the-state active-state [ append result "->" ]
+				skip-chars: 0
+				append result  ""
+				if states/:state = all [ default-state  the-state default-state] [
+					append result "*"
+					skip-chars: skip-chars + 1
+				]
+				if states/:state = active-state [
+					append result "->"
+					skip-chars: skip-chars + 2
+				]
 			
-				append result states/:state/to-string/level lvl + 2 
+				append result skip states/:state/to-string/level lvl + 2  skip-chars
 			]
 		]
 		result
 	]
 ]
+
+get-transition-defs: func [
+	{Calculates where the transition branches and the path to the inner new state}
+	from [path!]
+	to [path!]
+	/local branch
+][
+	first+ from first+ to
+	branch: root
+	
+	while [ (first from) = (first to) ][
+		branch: branch/states/(first from)
+		from: next from
+		to: next to
+	]
+	object [
+		branch-state: branch
+		down: to
+	]
+]
+
 find-state: func [
 	machine
 	name [path! word! object!]
@@ -289,7 +321,7 @@ add-state S1 'S1b S1b
 add-state S1 'S1c S1c
 
 add-state/initial S2 'S2a S2a
-add-state S2 'S2b S2b
+add-state/default S2 'S2b S2b
 
 
 add-state/initial root 'S1 S1
