@@ -33,9 +33,31 @@ REBOL [
 
 		That is all.
 
+		# Logical transitions
+
+		Transitions can be between logical states. Meaning that those are only for
+		programming transitions in an efficient way. So there is nothing like entry or exit.
+		Only to fingure out what the real transitions should be.
+		
+		Is it possible to calculate the result in one go, or does the program have to jump aroudn
+		between different logical states.
+
+		Say that there is a matrix T maps a given state to a new state by multiplication.
+		So one state is represented by X such that X_j = active_state == j (j is a number
+		represneting a state). Then the X_i+1 = T * X_i represent a step among the logical 
+		states.  If it returns all false, then there is no transition.
+		If it returns a state which is a ending state, then it found a solution.
+		If anyting else, repeat the multiplicaiton.
+		One can possibly draw conclusions about what to do, but since T can change every time 
+		the recursion shall be done, the calculations has to be done every time.
+
+		Just make it straight forward, keep an eye on getting into a loop.
+		
 		}
+	TODO: {In the middle of redfining transitions from a function returning a new state
+		to a block of "transition":s having clause and to}
 ]
-debug: false 
+debug: true
 
 the-state: func [
 	state [word! object!]
@@ -53,10 +75,12 @@ if debug [
 ]
 
 machine!: make object! [
+	type: 'state
 	name: none
 	states: none
 	active-state: none
 	default-state: none
+	transitions: []
 	in-handler: func [  ;  This is for internal use. The script "user" script is "on-entry"
 		/local
 			the-active-state
@@ -90,7 +114,7 @@ machine!: make object! [
 		if word? path [
 			return get in states path
 		]
-		s: self
+		si: self
 		foreach nme path [
 			unless stmp: get in s/states nme [
 				throw reform [ "Not a valid path:" path "starting from" full-name self "Problem at " nme ]
@@ -185,6 +209,61 @@ machine!: make object! [
 	]
 ]
 
+transition!: make object! [
+	to: None  ; Word with name of the landing state logical or ...
+	clause: None ; if evaluated to true there will be a transition
+]
+
+logic-state: make object! [
+	type: 'logic-state
+	name: none
+	transitions: []
+]
+new-logic-state: func [ name [ word! string! ]  /local state ][
+	state: make logic-state  [] 
+	state/name: to-word name
+	return state
+]
+
+logic-state
+
+transition!: make object! [
+	to: none
+	clause: none
+]
+
+add-transition: func [
+	{Transitions are added to a state in the order of evaluation.
+	So, the one first added is evaluate first.
+	For a defalut transition clause should be true
+	}
+	from [ word! object!] {From this state, logical or ...}
+	to [ word! object! ] {To this state}
+	clause [ block! function! object! ] {Transition if evaluated to true. }
+	/local transition 
+][
+	if object? to [ to: object/name ]
+	if word? from [
+		from: get-state from
+	]
+	transition: make transition! compose [ to: (to) ]
+	switch type? :clause [
+		#(block!) [ 
+				transition/clause: does clause
+		]
+		#(function!) [
+				transition/clause: :clause
+		]
+		#(object!) [ ; if it is a reuse of transition. Should not be common
+				transition: clause
+		]
+		#(logic!) [
+				transition/clause: :clause
+		]
+	]
+	append from/transitions transition
+]
+
 get-transition-defs: func [
 	{Calculates where the transition branches and the path to the inner new state}
 	from [path!]
@@ -219,18 +298,18 @@ find-state: func [
 		path [word! path!]
 	][
 		path: to-path path
+print path
+print machine/to-string
 		foreach p path [
-			found: false
-			foreach state machine/states [
-				if  (the-state/exec state 'name) = p [
-					machine: get the-state/exec state 'name
-					found: machine
-					break
-				]
+print p
+			either all [ machine/states result: get in machine/states p ]
+			[
+				machine: result
+			][
+				return false
 			]
-			unless found [ break ]
 		]
-		return found
+		return machine
 	]
 	if object? name [ return name ]
 	; Search order
