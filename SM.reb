@@ -55,7 +55,12 @@ REBOL [
 		
 		}
 	TODO: {In the middle of redfining transitions from a function returning a new state
-		to a block of "transition":s having clause and to}
+		to a block of "transition":s having clause and to
+
+		There is somehting funny with which actions are run at entry.
+		}
+
+	
 ]
 debug: true
 
@@ -70,8 +75,8 @@ the-state: func [
 
 on-entry-default: on-exit-default: none
 if debug [
-	on-entry-default: func [ state ] [ print [ "Entered state" full-name state ]]
-	on-exit-default: func [ state ] [ print [ "Exit state" full-name state ]]
+	on-entry-default: func [ state ] [ print [ "Entered state" full-path state ]]
+	on-exit-default: func [ state ] [ print [ "Exit state" full-path state ]]
 ]
 
 machine!: make object! [
@@ -85,7 +90,7 @@ machine!: make object! [
 		/local
 			the-active-state
 		][
-		;print ["Enter state" full-name self ]
+		print [ "Running on-entry of" self/name ]
 		all [ :on-entry do :on-entry self ]
 		if states [
 			active-state/in-handler
@@ -101,7 +106,7 @@ machine!: make object! [
 		;all [ :on-exit	any [ all[ block? :on-exit do on-exit false ]  on-exit ] ]
 		all [ :on-exit do :on-exit self ]
 		if default-state [ active-state: states/(default-state) ]
-		;print [ "Exit state" full-name self ]
+		;print [ "Exit state" full-path self ]
 	]
 
 	on-entry: :on-entry-default
@@ -117,29 +122,51 @@ machine!: make object! [
 		si: self
 		foreach nme path [
 			unless stmp: get in s/states nme [
-				throw reform [ "Not a valid path:" path "starting from" full-name self "Problem at " nme ]
+				throw reform [ "Not a valid path:" path "starting from" full-path self "Problem at " nme ]
 			]
 			s: stmp
 		]
 		return s
 	]
 		
+	transfer: func [
+		{The states transfer clauses are evaluated and follows possible logical-states.
+         If it finally lands on a state, the state is returned.}
+		state [object!] {One of which transfer to evaluate}
+		/history hist  {A list of states that has been touched.  If a landing state is in the
+						list, it will be as not evaluated to true.}
+		/local to
+	][
+		unless history [ hist: copy [] ]
+		foreach tran state/transitions [
+			print [ "Evaluating transition" tran/to-string ]
+			if tran/clause [
+				to: find-state state tran/to
+				unless :to [ throw reform [ "Tried to transfer to a non-existing state:" tran/to ] ]
+				if to/type = 'state [ return to ]
+				if find hist to [ throw reform [ "A logic loop including:" history ] ]
+				append hist state
+				return transfer/history to 
+			]
+		]
+		return none
+	]
 		
 	update: func [
 		/local new-state
 	][
 		unless active-state [ return none]  ; it's a leaf
 
-		new-state: active-state/transitions
+		new-state: transfer self 
 
 		either new-state [
 
 			? new-state
-			new-state: find-state self new-state
+			;new-state: find-state self new-state
 
 			print [ "Transition from:" active-state/name "to:" new-state/name]
 
-			transition-defs: get-transition-defs full-name active-state full-name new-state
+			transition-defs: get-transition-defs full-path active-state full-path new-state
 
 			; Leave the active branch
 			machine: transition-defs/branch-state
@@ -165,7 +192,6 @@ machine!: make object! [
 			any [ all [ active-state active-state/full-state-path ] to-path []]
 	]
 
-	transitions: none ; a state in the same machine for now
 	parent: none
 
 	to-string: func [ /level lvl /local pre result ] [
@@ -183,8 +209,14 @@ machine!: make object! [
 			pre sep "on-entry:" " " l-string :on-entry newline
 			pre sep "on-exit:" " " l-string :on-exit newline
 		]
-		if  :transitions  [
-			append result rejoin [ pre sep "transitions:" " " mold body-of :transitions newline ]
+		if  all [ :transitions]  [
+			append result rejoin [ pre sep "transitions:" newline]
+			foreach tran transitions [
+				switch type? :tran/clause [
+					#(function!) [ append result rejoin [ pre sep sep body-of :tran/clause " -> " tran/to  newline ] ]
+					#(logic!) [ append result rejoin [ pre sep sep "Always -> " tran/to  newline ] ]
+				]
+			]
 		]
 		if states [
 			append result rejoin [
@@ -210,27 +242,33 @@ machine!: make object! [
 ]
 
 transition!: make object! [
-	to: None  ; Word with name of the landing state logical or ...
-	clause: None ; if evaluated to true there will be a transition
+	to: none  ; Word with name of the landing state logical or ...
+	clause: none ; if evaluated to true there will be a transition
+	to-string: func [][
+		reform [ body-of :clause "->" to ]
+	]
 ]
 
-logic-state: make object! [
+logic-state!: make object! [
 	type: 'logic-state
 	name: none
 	transitions: []
 ]
+
 new-logic-state: func [ name [ word! string! ]  /local state ][
-	state: make logic-state  [] 
-	state/name: to-word name
+	state: make logic-state!  compose [
+		name: (to-word name)
+	] 
 	return state
 ]
 
-logic-state
-
-transition!: make object! [
-	to: none
-	clause: none
+to-lit: func [ x [word! path! ] ][
+	switch type? x [
+		#(word!) [ to-lit-word x ]
+		#(path!) [ to-lit-path x ]
+	]
 ]
+		
 
 add-transition: func [
 	{Transitions are added to a state in the order of evaluation.
@@ -238,15 +276,17 @@ add-transition: func [
 	For a defalut transition clause should be true
 	}
 	from [ word! object!] {From this state, logical or ...}
-	to [ word! object! ] {To this state}
-	clause [ block! function! object! ] {Transition if evaluated to true. }
+	to [ path! word! object! ] {To this state}
+	clause [ block! function! object! logic!] {Transition if evaluated to true. }
 	/local transition 
 ][
-	if object? to [ to: object/name ]
 	if word? from [
-		from: get-state from
+		from: find-state root from
 	]
-	transition: make transition! compose [ to: (to) ]
+
+	if object? to [ to: full-name to ] 
+
+	transition: make transition! compose [ to: (to-lit to) ]
 	switch type? :clause [
 		#(block!) [ 
 				transition/clause: does clause
@@ -298,10 +338,7 @@ find-state: func [
 		path [word! path!]
 	][
 		path: to-path path
-print path
-print machine/to-string
 		foreach p path [
-print p
 			either all [ machine/states result: get in machine/states p ]
 			[
 				machine: result
@@ -319,18 +356,23 @@ print p
 	;   - find-state of root	
 	; Start searching in current machine and below
 	name: to-path name
+
+	if 'root = first name [ return is-path-top root next name ]
+
 	if result: is-path-top machine name [ return result ]
+
 	foreach state machine/states [
 		if result: find-state get state  name [ return result ]
 	]
+
 	return find-state root name
 ]
 
 ; machine!/_start-state: make machine! [ transitions: does [ parent/start-state ] name: 'the-starting-point ]
 
-full-name: func [ state ][
+full-path: func [ state ][
 	unless state/parent [ return to-path 'root ]
-	append full-name state/parent state/name
+	append full-path state/parent state/name
 ]
 
 add-state: func [
@@ -368,31 +410,29 @@ prepare-machine: func [ machine ] [
 root: make machine! [ name: 'root ]
 
 	S1: make machine! [
-		transitions: func [] [ if 0.5 > random 1.0 [ 'S2] ]
+		;transitions: func [] [ if 0.5 > random 1.0 [ 'S2] ]
+		add-transition self 'S2 [ 0.5 > random 1.0 ]
 	]
 		S1a: make machine! [
-			transitions: func [] [ if 0.1 > random 1.0 [ 'S1b] ]
+			add-transition self 'S1b [ 0.1 > random 1.0 ]
+			add-transition self 'S1a [ 0.1 > random 1.0 ]
+			add-transition self 'S1c true
 		]
 		S1b: make machine! [
-			transitions: func [] [ if 0.1 > random 1.0 [ 'S1c] ]
+			add-transition self 'S1c [ 0.1 > random 1.0 ]
 		]
 		S1c: make machine! [
-			transitions: func [] [ if 0.1 > random 1.0 [ 'S1a] ]
+			add-transition self 'S1a [ 0.1 > random 1.0 ]
 		]
 	S2: make machine! [
-		transitions: func [] [
-			if 0.5 > random 1.0 [
-				print "------> testing new" 
-				'S1/S1b
-			]
+			add-transition self 'S1/S1b [ 0.5 > random 1.0 ]
 		]
-	]
 
 		S2a: make machine! [
-			transitions: func [] [ if 0.1 > random 1.0 [ 'S2b] ]
+			add-transition self 'S2b [ 0.1 > random 1.0 ]
 		]
 		S2b: make machine! [
-			transitions: func [] [ if 0.1 > random 1.0 [ 'S2a] ]
+			add-transition self 'S2a [ 0.1 > random 1.0 ]
 		]
 
 add-state/initial S1 'S1a S1a
