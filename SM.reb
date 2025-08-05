@@ -62,6 +62,7 @@ REBOL [
 
 	
 ]
+random/seed 12135
 debug: true
 
 the-state: func [
@@ -119,7 +120,7 @@ machine!: make object! [
 		if word? path [
 			return get in states path
 		]
-		si: self
+		s: self
 		foreach nme path [
 			unless stmp: get in s/states nme [
 				throw reform [ "Not a valid path:" path "starting from" full-path self "Problem at " nme ]
@@ -157,12 +158,9 @@ machine!: make object! [
 	][
 		unless active-state [ return none]  ; it's a leaf
 
-		new-state: transfer self 
+		new-state: transfer active-state 
 
 		either new-state [
-
-			? new-state
-			;new-state: find-state self new-state
 
 			print [ "Transition from:" active-state/name "to:" new-state/name]
 
@@ -245,7 +243,10 @@ transition!: make object! [
 	to: none  ; Word with name of the landing state logical or ...
 	clause: none ; if evaluated to true there will be a transition
 	to-string: func [][
-		reform [ body-of :clause "->" to ]
+		switch type? :clause [
+			#(function!) [ rejoin [ body-of :clause " -> " to ] ]
+			#(logic!) [ rejoin [ "Always -> " to  ] ]
+		]
 	]
 ]
 
@@ -310,6 +311,7 @@ get-transition-defs: func [
 	to [path!]
 	/local branch
 ][
+	? from ? to
 	first+ from first+ to
 	branch: root
 	
@@ -448,9 +450,13 @@ add-state root 'S2 S2
 
 prepare-machine root
 root/in-handler
-;root/update
-;S1/update
 
-print root/to-string
+n: 0
+forever [
+	root/update
+	print [ "n=" n root/full-state-path ]
+	if n = 106 [ break ]
+	n: n + 1
+]
 
 ; vim: sw=4 ts=4 noexpandtab syntax=rebol:
