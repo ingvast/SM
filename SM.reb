@@ -142,23 +142,24 @@ machine!: make object! [
 		foreach tran state/transitions [
 			print [ "Evaluating transition" tran/to-string ]
 			if tran/clause [
-				to: find-state state tran/to
+				to: find-state state/parent tran/to
 				unless :to [ throw reform [ "Tried to transfer to a non-existing state:" tran/to ] ]
 				if to/type = 'state [ return to ]
 				if find hist to [ throw reform [ "A logic loop including:" history ] ]
 				append hist state
-				return transfer/history to 
+				return transfer/history to hist
 			]
 		]
-		return none
+		none
 	]
 		
 	update: func [
-		/local new-state
+		;/local new-state
 	][
 		unless active-state [ return none]  ; it's a leaf
 
 		new-state: transfer active-state 
+;if dbg [ trace off ? self halt ]
 
 		either new-state [
 
@@ -326,15 +327,19 @@ get-transition-defs: func [
 	]
 ]
 
+
+
+
 find-state: func [
-	machine
-	name [path! word! object!]
+	machine [object!]
+	name [path! word! ]
 	/local 
-		result is-path-top 
+		result is-path-top search-below
 ][
 	is-path-top: func [
 		{Checks if path is a direct part of machine.
 		Returns the leaf of the correct path or none
+		The path should start as path under machine.
 		}
 		machine [object!]
 		path [word! path!]
@@ -350,24 +355,35 @@ find-state: func [
 		]
 		return machine
 	]
+	search-below: func [
+		{Checks each state if is full-path then
+		recursively each state below}
+		machine [object!]
+		path [path!]
+		/local result
+	][
+		foreach state machine/states [
+			if result: is-path-top machine path [ return result ]
+		]
+		foreach state machine/states [
+			if result: search-below get state path [ return result ]
+		]
+		return none
+	]
+	;print [ "Searchin for" name "in"  machine/name ]
 	if object? name [ return name ]
 	; Search order
 	; First that matches:
-	; 	- Any in this machine
-	;   - find-state of any each substate of this machine
-	;   - find-state of root	
-	; Start searching in current machine and below
+	; 	- Any full path in this machine
+	;   - Any full path in the machine below repeat below
+	;   - Any find state in machine above
 	name: to-path name
 
 	if 'root = first name [ return is-path-top root next name ]
 
-	if result: is-path-top machine name [ return result ]
-
-	foreach state machine/states [
-		if result: find-state get state  name [ return result ]
-	]
-
-	return find-state root name
+	if result: search-below machine name [ return result ]
+	if machine/parent [ return find-state machine/parent name ]
+	return none
 ]
 
 ; machine!/_start-state: make machine! [ transitions: does [ parent/start-state ] name: 'the-starting-point ]
@@ -427,14 +443,16 @@ root: make machine! [ name: 'root ]
 			add-transition self 'S1a [ 0.1 > random 1.0 ]
 		]
 	S2: make machine! [
-			add-transition self 'S1/S1b [ 0.5 > random 1.0 ]
+			add-transition self 'S1b [ 0.5 > random 1.0 ]
+			add-transition self 'S2b [ 0.1 > random 1.0 ]
+			add-transition self 'S2a [ 0.1 > random 1.0 ]
 		]
 
 		S2a: make machine! [
 			add-transition self 'S2b [ 0.1 > random 1.0 ]
 		]
 		S2b: make machine! [
-			add-transition self 'S2a [ 0.1 > random 1.0 ]
+			add-transition self 'S2a [ 1 > random 1.0 ]
 		]
 
 add-state/initial S1 'S1a S1a
@@ -451,12 +469,10 @@ add-state root 'S2 S2
 prepare-machine root
 root/in-handler
 
-n: 0
-forever [
-	root/update
-	print [ "n=" n root/full-state-path ]
-	if n = 106 [ break ]
-	n: n + 1
+run: does [
+	forever [
+		root/update
+	]
 ]
 
 ; vim: sw=4 ts=4 noexpandtab syntax=rebol:
