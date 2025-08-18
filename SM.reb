@@ -63,7 +63,7 @@ REBOL [
 	
 ]
 random/seed 12135
-debug: false
+debug: true
 
 the-state: func [
 	state [word! object!]
@@ -165,7 +165,7 @@ machine!: make object! [
 
 			;print [ "Transition from:" active-state/name "to:" new-state/name]
 
-			transition-defs: get-transition-defs full-path active-state full-path new-state
+			transition-defs: get-transition-defs active-state full-path new-state
 
 			; Leave the active branch
 			machine: transition-defs/branch-state
@@ -240,6 +240,14 @@ machine!: make object! [
 	]
 ]
 
+get-root: func [
+	{Returns the root of the machine by searching upwards until there is no parent}
+	machine [ object! ] {The machine to start searching at}
+][
+	while [ machine/parent ] [ machine: machine/parent ]
+	return machine
+]
+
 transition!: make object! [
 	to: none  ; Word with name of the landing state logical or ...
 	clause: none ; if evaluated to true there will be a transition
@@ -277,14 +285,11 @@ add-transition: func [
 	So, the one first added is evaluate first.
 	For a defalut transition clause should be true
 	}
-	from [ word! object!] {From this state, logical or ...}
+	from [ object!] {From this state, logical or ...}
 	to [ path! word! object! ] {To this state}
 	clause [ block! function! object! logic!] {Transition if evaluated to true. }
 	/local transition 
 ][
-	if word? from [
-		from: find-state root from
-	]
 
 	if object? to [ to: full-name to ] 
 
@@ -313,12 +318,13 @@ get-transition-defs: func [
 		a/b a -> a none
 		a/b a/b -> a b
 	}
-	from [path!]
+	from [object!]
 	to [path!]
 	/local branch
 ][
+	branch: get-root from
+	from: full-path from
 	first+ from first+ to
-	branch: root
 	
 	while [
 		all [
@@ -391,7 +397,7 @@ find-state: func [
 	;   - Any find state in machine above
 	name: to-path name
 
-	if 'root = first name [ return is-path-top root next name ]
+	if 'root = first name [ return is-path-top get-root machine next name ]
 
 	if result: search-below machine name [ return result ]
 	if machine/parent [ return find-state machine/parent name ]
@@ -480,6 +486,15 @@ add-state root 'S2 S2
 
 prepare-machine root
 root/in-handler
+
+; Make another state machine
+m: make machine! [ name: 'm ]
+add-state/initial  m 'n1 n1: make machine! [ name: 'n1 ] 
+add-state          m 'n2 n2: make machine! [ name: 'n2 ] 
+add-transition n1 'n2 [ true ]
+add-transition n2 'n1 [ true ]
+
+
 
 run: does [
 	forever [
