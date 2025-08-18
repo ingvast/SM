@@ -63,7 +63,7 @@ REBOL [
 	
 ]
 random/seed 12135
-debug: true
+debug: false
 
 the-state: func [
 	state [word! object!]
@@ -91,7 +91,7 @@ machine!: make object! [
 		/local
 			the-active-state
 		][
-		print [ "Running on-entry of" self/name ]
+		;print [ "Running on-entry of" self/name ]
 		all [ :on-entry do :on-entry self ]
 		if states [
 			active-state/in-handler
@@ -140,7 +140,7 @@ machine!: make object! [
 	][
 		unless history [ hist: copy [] ]
 		foreach tran state/transitions [
-			print [ "Evaluating transition" tran/to-string ]
+			;print [ "Evaluating transition" tran/to-string ]
 			if tran/clause [
 				to: find-state state/parent tran/to
 				unless :to [ throw reform [ "Tried to transfer to a non-existing state:" tran/to ] ]
@@ -163,7 +163,7 @@ machine!: make object! [
 
 		either new-state [
 
-			print [ "Transition from:" active-state/name "to:" new-state/name]
+			;print [ "Transition from:" active-state/name "to:" new-state/name]
 
 			transition-defs: get-transition-defs full-path active-state full-path new-state
 
@@ -307,16 +307,28 @@ add-transition: func [
 ]
 
 get-transition-defs: func [
-	{Calculates where the transition branches and the path to the inner new state}
+	{Calculates where the transition branches and the path to the inner new state
+	This is what to expect
+		a a/b -> a b
+		a/b a -> a none
+		a/b a/b -> a b
+	}
 	from [path!]
 	to [path!]
 	/local branch
 ][
-	? from ? to
 	first+ from first+ to
 	branch: root
 	
-	while [ (first from) = (first to) ][
+	while [
+		all [
+				second from 
+				second to
+				(first from) = (first to)
+				not empty? branch/states
+			]
+		][
+		; print [from branch/name]
 		branch: branch/states/(first from)
 		from: next from
 		to: next to
@@ -473,6 +485,42 @@ run: does [
 	forever [
 		root/update
 	]
+]
+
+{Format for parsing machine, just a test
+}
+[ state S1
+	  transition S2 [ x = y ]  ; transit to S2 if x = y
+	  transition S2/a [ x = 0 ] 
+	  transition S2/b [ x = 1 ]
+	  transition S1/a true
+	  entry  [ n: 5 ]
+	  exit [ n: n + 1 ]
+	  [ ; Substates to S1
+		logical-state a 
+			transition S2 [ y = 0 ]
+			transition S1/S1a [ y = 1 ]
+			transition S2/S2a true
+		state S1a initial default
+			entry [ print "gotten into S1a" ]
+			exit [ n: n + 1 ]
+		state S1b 
+			entry [ n: n - 1 ]
+		state S1c entry [n: n * 2 ]
+		    transition S1a [ n > 5 ]
+
+	  ]
+  state S2
+	[ 
+		state S2a
+		state S2b
+		logical-state a
+		logical-state b
+	]
+	tranition S1 [  ]
+	
+	logical-state a 
+		transition 
 ]
 
 ; vim: sw=4 ts=4 noexpandtab syntax=rebol:
