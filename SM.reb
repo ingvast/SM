@@ -65,15 +65,6 @@ REBOL [
 random/seed 12135
 debug: true
 
-the-state: func [
-	state [word! object!]
-	/exec method {Do the method of the object if it is a result}
-] [
-	if word? state [ state: get state ]
-	if exec [ return do to-path reduce [ 'state method ] ]
-	state
-]
-
 on-entry-default: on-exit-default: none
 if debug [
 	on-entry-default: func [ state ] [ print [ "Entered state" full-path state ]]
@@ -81,12 +72,13 @@ if debug [
 ]
 
 machine!: make object! [
-	type: 'state
 	name: none
-	states: none
+	type: 'state
 	active-state: none
 	default-state: none
+	states: none
 	transitions: []
+	init:
 	in-handler: func [  ;  This is for internal use. The script "user" script is "on-entry"
 		/local
 			the-active-state
@@ -193,7 +185,21 @@ machine!: make object! [
 
 	parent: none
 
-	to-string: func [ /level lvl /local pre result ] [
+	to-string: func [
+		/level lvl {Number of indents}
+		/local pre result sep transitions-to-string skip-chars lstate
+	] [
+
+		transitions-to-string: func [ transitions pre ] [
+			append result rejoin [ pre sep "transitions:" newline]
+			foreach tran transitions [
+				switch type? :tran/clause [
+					#(function!) [ append result rejoin [ pre sep sep body-of :tran/clause " -> " tran/to  newline ] ]
+					#(logic!) [ append result rejoin [ pre sep sep "Always -> " tran/to  newline ] ]
+				]
+			]
+		]
+
 		sep: "  "
 		l-string: func [ o ][
 			case [
@@ -208,32 +214,36 @@ machine!: make object! [
 			pre sep "on-entry:" " " l-string :on-entry newline
 			pre sep "on-exit:" " " l-string :on-exit newline
 		]
-		if  all [ :transitions]  [
-			append result rejoin [ pre sep "transitions:" newline]
-			foreach tran transitions [
-				switch type? :tran/clause [
-					#(function!) [ append result rejoin [ pre sep sep body-of :tran/clause " -> " tran/to  newline ] ]
-					#(logic!) [ append result rejoin [ pre sep sep "Always -> " tran/to  newline ] ]
-				]
-			]
+		if not empty? :transitions  [
+			transitions-to-string transitions pre
 		]
 		if states [
-			append result rejoin [
-				pre sep "states:" newline 
+
+			append result rejoin [ pre sep "states:" newline ]
+
+			foreach state-name states [
+				lstate: get state-name
+				if lstate/type = 'state [
+					skip-chars: 0
+					append result  ""
+					if lstate/name =  default-state  [
+						append result "*"
+						skip-chars: skip-chars + 1
+					]
+					if lstate = active-state [
+						append result "->"
+						skip-chars: skip-chars + 2
+					]
+					append result remove/part lstate/to-string/level lvl + 2  skip-chars
+				]
 			]
-			foreach state states [
-				skip-chars: 0
-				append result  ""
-				if states/:state = all [ default-state  the-state default-state] [
-					append result "*"
-					skip-chars: skip-chars + 1
+			foreach state-name states [
+				state: get state-name
+				if state/type = 'logic-state [
+					;append result  ""
+					append result  rejoin [ pre sep sep "#" state/name ":" newline ]
+					transitions-to-string state/transitions join join pre sep sep
 				]
-				if states/:state = active-state [
-					append result "->"
-					skip-chars: skip-chars + 2
-				]
-			
-				append result skip states/:state/to-string/level lvl + 2  skip-chars
 			]
 		]
 		result
@@ -404,6 +414,28 @@ find-state: func [
 	return none
 ]
 
+; alternative to print that also prints all objects having the to-string method
+pr: func [
+	def
+	/local l-form
+][
+	l-form: func [ def /local result ][
+		if all [ object? :def get in :def 'to-string ][
+			return def/to-string
+		]
+		if block? :def [
+			result: copy ""
+			foreach x reduce :def [
+				append result rejoin [ l-form :x space ]
+			]
+			remove back tail result
+			return result
+		]
+		return form :def
+	]
+	print l-form :def 
+]
+
 ; machine!/_start-state: make machine! [ transitions: does [ parent/start-state ] name: 'the-starting-point ]
 
 full-path: func [ state ][
@@ -421,6 +453,10 @@ add-state: func [
 	/default
 ][
 	states: any [ machine/states object []]
+
+	; Uneless nothing given, first state is active at start
+	if empty? states [ machine/active-state: state ]
+
 	repend states [ name state ]
 	machine/states: states
 	state/parent: machine
@@ -487,15 +523,6 @@ add-state root 'S2 S2
 prepare-machine root
 root/in-handler
 
-; Make another state machine
-m: make machine! [ name: 'm ]
-add-state/initial  m 'n1 n1: make machine! [ name: 'n1 ] 
-add-state          m 'n2 n2: make machine! [ name: 'n2 ] 
-add-transition n1 'n2 [ true ]
-add-transition n2 'n1 [ true ]
-
-
-
 run: does [
 	forever [
 		root/update
@@ -504,7 +531,8 @@ run: does [
 
 {Format for parsing machine, just a test
 }
-[ state S1
+testM: [
+	state S1
 	  transition S2 [ x = y ]  ; transit to S2 if x = y
 	  transition S2/a [ x = 0 ] 
 	  transition S2/b [ x = 1 ]
@@ -525,6 +553,7 @@ run: does [
 		    transition S1a [ n > 5 ]
 
 	  ]
+
   state S2
 	[ 
 		state S2a
@@ -537,5 +566,93 @@ run: does [
 	logical-state a 
 		transition 
 ]
+
+parse-machine: func [
+	name [word! none!] {Name of the machine}
+	desc [block!]
+	/local state clause machs to-state
+	/root machine {The machine to build on, mostly used internally}
+][
+
+	unless root [ machine: make machine! compose [ name: (to-lit-word name) ] ]
+
+	p-transition:  [
+		'transition 
+			set to-state [word! | path! ]
+			set clause ['true | logic! | block! ]
+			(  
+				if clause = 'true [ clause: true ] 
+				add-transition state to-state clause
+			)
+	]
+
+	p-state: [
+		'state set f-name word! 
+		(
+			state: make machine! [ name: f-name parent: machine ]
+			add-state machine f-name state
+		)
+		any [
+			'default
+			( print [ "Default state: " f-name ] machine/default-state: f-name )
+			|
+			'initial
+			( print [ "Initial state: " f-name ] machine/active-state: state )
+		]
+		any [
+			p-transition
+			|
+			'entry set exec block! ( state/on-entry: does exec )
+			|
+			'exit set exec block! ( state/on-exit: does exec )
+			|
+			set desc block!
+			( 
+				parse-machine/root none desc state
+			)
+		]
+	]
+	p-logical-state: [
+		'logical-state set f-name word! 
+				(
+					state: make logic-state! [ name: f-name parent: machine]
+					machine/states: any [ machine/states object [] ]
+					repend machine/states [ f-name state ]
+				)
+		any [
+				p-transition
+		]
+	]
+		
+	unless parse  desc [
+		any [
+			here:
+			p-state 
+			| p-logical-state
+		]
+	] [
+		dbg: machine
+		throw reform [ "Error in machine parsing at:" mold copy/part here 2 ]
+	]
+	return machine
+]
+
+
+m1: parse-machine 'm1 [
+	state Start
+		entry [ n: 0 pr "On entry" ]
+		transition one true
+		[
+			state S entry [ n: n + 1 ] exit [ pr n ]
+			logical-state one transition two [ n > 1 ]
+			transition S true
+		]
+	state Goal
+		entry [ print ["Got there n=" n ] ]
+	state Fault
+		entry [ print [ "Should not be here " ] ]
+]
+m1/init
+pr m1
 
 ; vim: sw=4 ts=4 noexpandtab syntax=rebol:
