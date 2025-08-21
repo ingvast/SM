@@ -644,11 +644,17 @@ m1: parse-machine 'm1 [
 		transition one true
 		[
 			state S entry [ n: n + 1 ] exit [ pr n ]
-			logical-state one transition two [ n > 1 ]
 			transition S true
+
 		]
+	logical-state one
+		transition two [ pr "Test one" n > 1 ]
+	logical-state two
+		transition Goal [ pr "Test two" n > 2 ]
+
 	state Goal
 		entry [ print ["Got there n=" n ] ]
+		transition S true
 	state Fault
 		entry [ print [ "Should not be here " ] ]
 ]
