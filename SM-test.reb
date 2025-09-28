@@ -1,12 +1,14 @@
 REBOL [
+	name: SM-test
 	title: "Test of Hirarchial state machine"
 	date: "2025-08-25"
-	needs: [ SM.reb ]
+	;needs: [ SM ]
 	author: {Johan Ingvat}
 ]
 random/seed 12135
 debug: true
 
+import SM
 
 root: make machine! [ name: 'root ]
 

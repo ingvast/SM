@@ -50,14 +50,25 @@ p-node: [
 	( remove back tail v-node-attributes )
 	dedent
 ]
-p-edge: [
-	any [
+p-edge: [(v-clause: none)
+	any [ 
 		'source set v-source number!
 		| 'target set v-target number!
+		| 'label set v-clause string! 
 		| skip skip 
 	]
-	(iprint [ "EDGE:" v-source "->" v-target ] )
+	(iprint [ "EDGE:" v-source "->" v-target "if" any [ v-clause "always" ] ] )
 ]
+
+p-label-graphics: [ 
+	'LabelGraphics into [
+		any [ ;here: ( print [ copy/part here 2 ] )
+			'text set v-clause string! 
+			| skip skip
+		]
+	]
+]
+	
 p-interedge: [
 	any [
 		'sourcePath set v-source string!

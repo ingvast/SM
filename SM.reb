@@ -1,5 +1,7 @@
 REBOL [
-	name: "Hirarchial state machine"
+	name: SM
+	title: "Hirarchial state machine"
+	exports: [  ]
 	date: "2025-03-15"
 	author: {Johan Ingvast}
 
