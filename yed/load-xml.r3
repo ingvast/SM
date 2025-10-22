@@ -310,15 +310,11 @@ load-xml: use [
 
         open-tag: func [tag][
             insert/only branch position
-            ;tag: name-to-tag tag
-            ;tag/1: to-tag tag/1
 	    tag: to-tag tag
             tree: position: append-child tag none
         ]
 
         close-tag: func [tag][
-            ;tag: name-to-tag tag
-            ;tag/1: to-tag tag/1
 	    tag: to-tag tag
             while [tag <> position/1][
                 probe reform ["No End Tag:" position/1]
@@ -329,11 +325,13 @@ load-xml: use [
         ]
     ]
 
-    is-tag: [and path! into [tag!]]
-    is-attr: [and path! into [issue!]]
+    ;is-tag: [and path! into [tag!]]
+    ;is-attr: [and path! into [issue!]]
+    is-tag: [and tag! ]
+    is-attr: [and issue!]
 
     name-to-tag: func [name [string!]][
-        back tail to-path replace name ":" "-"
+        replace name ":" "-"
     ]
 
     make-node: func [here /base][
@@ -377,7 +375,7 @@ load-xml: use [
                 | {'} copy value to {'}
             ] skip (
                 attr: name-to-tag attr
-                attr/1: to-issue attr/1
+		attr: to-issue attr
                 doc/append-attr attr decode-xml value
             )
         ]
