@@ -283,11 +283,12 @@ logic-state!: make object! [
     type: 'logic-state
     name: none
     transitions: []
+    parent: none
 ]
 
 new-logic-state: func [ name [ word! string! ]  /local state ][
     state: make logic-state!  compose [
-        name: (to-word name)
+        name: (to-lit-word name)
     ] 
     return state
 ]
@@ -311,7 +312,7 @@ add-transition: func [
     /local transition 
 ][
 
-    if object? to [ to: full-name to ] 
+    if object? to [ to: full-path to ] 
 
     transition: make transition! compose [ to: (to-lit to) ]
     switch type? :clause [

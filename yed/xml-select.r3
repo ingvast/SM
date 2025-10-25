@@ -86,130 +86,86 @@ get-attrs: func [
 
 build-graph: func [
     s 
-    /graph  machine state-type-id
     /local 
         names nodes  node-list
         node id keys state-type-key 
+        root
 ][
-    print "Begin graph"
-    get-state-type: func [ element /local text ][
-        foreach [k v] element [
-            if k = <data> [
-               if state-type-id = select v #key [
-                    return select v %.txt
-                ]
-            ]
-        ]
+    keys: select-all/deep s <key>
+    get-key-value: func [
+        node key-name
+        /local  key key-id dete data
+    ][
+        key: first filter keys #attr.name to-string key-name
+        print mold key
+        key-id: select key #id
+        
+        date: select-all node <data>
+        data: first filter date #key key-id
+        return select data %.txt
     ]
 
-    unless graph [
-        machine: make machine! [
-            name: "root"
-        ]
-
-        keys: select-all/deep s <key>
-        state-type-key: first filter keys #attr.name "stateType"
-        state-type-id: select state-type-key #id
-
+    root: make machine! [
+        name: "root"
     ]
+
+
     node-list: copy []
 
-    graphs: select-all/deep s <graph>
-    nodes: select-all graphs/1 <node>
+    nodes: select-all/deep s <node>
 
     foreach element nodes [
 
         id: select element #id
+        id-path: to-path split id "::"
 
+        ;names: get-attrs select-all/deep element <y:NodeLabel> %.txt
+        ;name: to-word any [ all [ not empty? names first names ] last id-path ]
+        name: to-word any [ get-key-value element "Name"  last id-path ]
 
-        names: get-attrs select-all/deep element <y:NodeLabel> %.txt
-        name: to-word any [ all [ not empty? names first names ] last split id "::" ]
-
-        node-type: get-state-type element
+        node-type: get-key-value element "state-type"
 
         switch/default node-type [
             "initial"
                 [
                     node: make machine! [ type: 'initial ]
                 ]
-            "logic-state"
+            "logical"
                 [
                     node: new-logic-state name
                 ]
         ] [ ; default
             node: make machine! compose [ name: (to-lit-word name) ]
         ]
-        print [ "Node with name" name "(" id ") of type" node-type "created" ]
 
-        add-state machine name node
 
         repend node-list [ id  node ]
 
-        sub-graph: build-graph/graph element node state-type-id
-        unless empty? node/states [
-            append node-list sub-graph/2
+        ; Find parent machine
+        
+        remove back tail parent-path: copy id-path 
+        either empty? parent-path [
+            parent: root
+        ][
+            parent-id: ajoin/with map-each x to-block parent-path [ to-string x ] "::"
+            parent: select node-list parent-id
         ]
+        print [ "Node with name" name "(" id ") of type" node-type "created" ]
+            
+        add-state parent name node
     ]
 
-    edges: select-all/deep graphs/1 <edge>
-    print [ "Transitions to handle" edges  ]
-
-    print "End graph"
-    return reduce [machine node-list ]
-]
-
-
-buildGraph: func [
-    s
-    /local cursor id? attr? e graph label
-        node-content id target source
-][
-
-    id?: func[ n ][ select n #id ]
-    attr?: func [ n a] [ select n a ]
-
-    cursor: s
-
-    forall cursor [
-        e: first cursor
-        switch e [
-            <node> [
-                node-content: cursor/2
-                id: id? node-content
-                label: sear node-content <y:NodeLabel>
-                label: attr? label %.txt
-                print [ "Found node" label "with id" id]
-
-                graph: sear node-content <graph>
-                if graph [
-                    graphid: sear graph #id
-                    print [ "In node" id "found <grahp> with id" graphid ]
-                    buildGraph  graph 
-                ]
-
-            ]
-            <edge> [
-                node-content: cursor/2
-                id: id? node-content
-                target: attr? node-content #target
-                source: attr? node-content #source
-                print [ "Found edge with id" id "from" source "to" target ]
-            ]
-        ]
-        cursor: next cursor
+    edges: select-all/deep s <edge>
+    foreach edge edges [
+        source: select edge #source
+        target: select edge #target
+        source: select node-list source
+        target: select node-list target
+        print [ full-path source "->" full-path target ]
+        add-transition source target to-block any [ get-key-value edge "clause" copy []]
     ]
-]
 
-p-main: [
-    any [
-        searchfor set res into [ ( append/only result res )  p-main]
-        | set tag tag! and block! into [
-            ( append current-path tag 'print ["getting into" tag "---" current-path ] )
-            p-main
-        ]
-        | skip 
-        | ('print ["Leaving" pop current-path ] )
-    ]
+    return reduce [root node-list ]
 ]
 
 
