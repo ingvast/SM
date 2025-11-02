@@ -97,7 +97,6 @@ build-graph: func [
         /local  key key-id dete data
     ][
         key: first filter keys #attr.name to-string key-name
-        print mold key
         key-id: select key #id
         
         date: select-all node <data>
@@ -111,6 +110,7 @@ build-graph: func [
 
 
     node-list: copy []
+    initials: copy []
 
     nodes: select-all/deep s <node>
 
@@ -119,8 +119,6 @@ build-graph: func [
         id: select element #id
         id-path: to-path split id "::"
 
-        ;names: get-attrs select-all/deep element <y:NodeLabel> %.txt
-        ;name: to-word any [ all [ not empty? names first names ] last id-path ]
         name: to-word any [ get-key-value element "Name"  last id-path ]
 
         node-type: get-key-value element "state-type"
@@ -128,7 +126,11 @@ build-graph: func [
         switch/default node-type [
             "initial"
                 [
-                    node: make machine! [ type: 'initial ]
+                    ;node: make machine! [ type: 'initial ]
+                    ;append initials node
+                    ;repend node-list [ id  node ]
+                    append initials id
+                    continue
                 ]
             "logical"
                 [
@@ -142,7 +144,6 @@ build-graph: func [
         repend node-list [ id  node ]
 
         ; Find parent machine
-        
         remove back tail parent-path: copy id-path 
         either empty? parent-path [
             parent: root
@@ -150,19 +151,51 @@ build-graph: func [
             parent-id: ajoin/with map-each x to-block parent-path [ to-string x ] "::"
             parent: select node-list parent-id
         ]
-        print [ "Node with name" name "(" id ") of type" node-type "created" ]
             
         add-state parent name node
     ]
 
     edges: select-all/deep s <edge>
     foreach edge edges [
-        source: select edge #source
-        target: select edge #target
-        source: select node-list source
-        target: select node-list target
-        print [ full-path source "->" full-path target ]
-        add-transition source target to-block any [ get-key-value edge "clause" copy []]
+        source-id: select edge #source
+        target-id: select edge #target
+        source: select node-list source-id
+        target: select node-list target-id
+
+
+        clause-raw: get-key-value edge "clause"
+        if error? try [
+            clause: to-block any [  clause-raw copy []]
+        ] [
+            print [ 
+                    "Clause" clause-raw "is not a valid rebol expression" newline
+                    "In transition from" full-path source "to" full-path target 
+                    halt
+            ]
+        ]
+
+        unless source-id [
+            print [ "Error: transition" edge/id "does not have a source" source-id]
+            print [ "Clause = " clause ]
+        ]
+        unless target-id [
+            print [ "Error: transition" edge/id "does not have a target" target-id]
+            print [ "Clause = " clause ]
+        ]
+        
+        pr [ "target:" target/name ]
+
+        if find initials source-id [
+            unless 0 = length? clause [
+                print [ "Error: The inital 'transition' cannot have a clause"]
+                halt
+            ]
+            target/parent/active-state: target
+            print [ "Found initial" full-path target/parent/active-state ]
+            continue
+        ]
+        pr [ "source:" source/name ]
+        add-transition source target clause
     ]
 
     return reduce [root node-list ]
