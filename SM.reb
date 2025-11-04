@@ -189,7 +189,7 @@ machine!: make object! [
         {Returns the full path to the active inner part of the machine}
     ][
         return append
-            to-path name
+            to-path to-word name
             any [ all [ active-state active-state/full-state-path ] to-path []]
     ]
 
@@ -221,8 +221,8 @@ machine!: make object! [
         pre: copy "" loop lvl [ append pre sep ]
         result: rejoin [
             pre any [ name "root" ] ":" newline
-            pre sep "on-entry:" " " l-string :on-entry newline
-            pre sep "on-exit:" " " l-string :on-exit newline
+            either  :on-entry [ rejoin [pre sep "on-entry:" " " l-string :on-entry newline ] ] [""]
+            either  :on-exit  [ rejoin [pre sep "on-exit:" " " l-string :on-exit newline ] ] [""]
         ]
         if not empty? :transitions  [
             transitions-to-string transitions pre
@@ -317,7 +317,9 @@ add-transition: func [
     transition: make transition! compose [ to: (to-lit to) ]
     switch type? :clause [
         #(block!) [ 
-                transition/clause: does clause
+                either empty? :clause 
+                [ transition/clause: true ]
+                [ transition/clause: does clause ]
         ]
         #(function!) [
                 transition/clause: :clause

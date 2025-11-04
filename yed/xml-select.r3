@@ -90,6 +90,11 @@ build-graph: func [
         names nodes  node-list
         node id keys state-type-key 
         root
+        source target
+        source-id target-id
+        initials
+        parent parent-id
+        edges
 ][
     keys: select-all/deep s <key>
     get-key-value: func [
@@ -121,7 +126,7 @@ build-graph: func [
 
         name: to-word any [ get-key-value element "Name"  last id-path ]
 
-        node-type: get-key-value element "state-type"
+        node-type: get-key-value element "Type"
 
         switch/default node-type [
             "initial"
@@ -132,12 +137,15 @@ build-graph: func [
                     append initials id
                     continue
                 ]
-            "logical"
+            "logic"
                 [
                     node: new-logic-state name
+                    print ["Logic state" name ]
                 ]
         ] [ ; default
             node: make machine! compose [ name: (to-lit-word name) ]
+            node/on-entry: probe to-block load any [probe get-key-value element "Entry" ""]
+            node/on-exit: probe to-block load any [probe get-key-value element "Exit" ""]
         ]
 
 
@@ -165,7 +173,8 @@ build-graph: func [
 
         clause-raw: get-key-value edge "clause"
         if error? try [
-            clause: to-block any [  clause-raw copy []]
+            clause: load any [  clause-raw copy []]
+            print [ clause-raw "->" clause ]
         ] [
             print [ 
                     "Clause" clause-raw "is not a valid rebol expression" newline
@@ -196,6 +205,8 @@ build-graph: func [
         ]
         pr [ "source:" source/name ]
         add-transition source target clause
+        ; Make sure all default transitions is last
+        sort/compare :source/transitions func [ a b ][ all [ logic? :b/clause :b/clause ]  ]
     ]
 
     return reduce [root node-list ]
