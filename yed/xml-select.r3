@@ -87,19 +87,31 @@ get-attrs: func [
 build-graph: func [
     s 
     /local 
-        names nodes  node-list
-        node id keys state-type-key 
-        root
-        source target
-        source-id target-id
-        initials
-        parent parent-id
+        clause
+        clause-raw
         edges
+        id        
+        id-path
+        initials
+        keys        
+        name        
+        node        
+        node-list
+        node-type
+        nodes        
+        parent        
+        parent-id
+        root
+        source        
+        source-id        
+        state-type-key 
+        target
+        target-id
 ][
     keys: select-all/deep s <key>
     get-key-value: func [
         node key-name
-        /local  key key-id dete data
+        /local  key key-id date data
     ][
         key: first filter keys #attr.name to-string key-name
         key-id: select key #id
@@ -140,12 +152,11 @@ build-graph: func [
             "logic"
                 [
                     node: new-logic-state name
-                    print ["Logic state" name ]
                 ]
         ] [ ; default
             node: make machine! compose [ name: (to-lit-word name) ]
-            node/on-entry: probe to-block load any [probe get-key-value element "Entry" ""]
-            node/on-exit: probe to-block load any [probe get-key-value element "Exit" ""]
+            node/on-entry: to-block load any [get-key-value element "Entry" ""]
+            node/on-exit: to-block load any [get-key-value element "Exit" ""]
         ]
 
 
@@ -174,7 +185,6 @@ build-graph: func [
         clause-raw: get-key-value edge "clause"
         if error? try [
             clause: load any [  clause-raw copy []]
-            print [ clause-raw "->" clause ]
         ] [
             print [ 
                     "Clause" clause-raw "is not a valid rebol expression" newline
@@ -186,24 +196,22 @@ build-graph: func [
         unless source-id [
             print [ "Error: transition" edge/id "does not have a source" source-id]
             print [ "Clause = " clause ]
+            halt
         ]
         unless target-id [
             print [ "Error: transition" edge/id "does not have a target" target-id]
             print [ "Clause = " clause ]
+            halt
         ]
         
-        pr [ "target:" target/name ]
-
         if find initials source-id [
             unless 0 = length? clause [
                 print [ "Error: The inital 'transition' cannot have a clause"]
                 halt
             ]
             target/parent/active-state: target
-            print [ "Found initial" full-path target/parent/active-state ]
             continue
         ]
-        pr [ "source:" source/name ]
         add-transition source target clause
         ; Make sure all default transitions is last
         sort/compare :source/transitions func [ a b ][ all [ logic? :b/clause :b/clause ]  ]
