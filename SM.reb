@@ -81,14 +81,94 @@ if debug [
     on-exit-default: func [ state ] [ print [ "Exit state" full-path state ]]
 ]
 
-machine!: make object! [
+base-state!: make object! [
+    type: 'some-type
     name: none
+    transitions: []
+    parent: none
+    to-string: func [] []
+]
+
+logic-state!: make base-state! [
+    type: 'logic-state
+]
+
+wait-state!: make base-state! [
+    help: trim/auto 
+           {A pseudo-state where threads meet. Whan all ended up there
+           the transitioin clauses are executed.
+        }
+    type: 'wait
+]
+
+branch-state!: make base-state! [
+    help: trim/auto 
+        {A pseudo-state made to split execution into several threads.
+        Can only be situated in a paralell-group.  Can only be run as first state of a 
+        paralell-group.
+        }
+    type: 'branch
+]
+
+paralell-machine!: make base-state! [
+    help: trim/auto
+        {A group of states. Each state is running separately to form paralell threads.}
+    
+    type: 'paralell
+    in-handler:  func [][
+        all [ :on-entry do :on-entry self ]
+        insert clear running-machines machines
+        foreach machine machines [
+            machine/in-handler
+        ]
+    ]
+    out-handler: func [][
+        foreach machine machines [
+            machine/out-handler
+        ]
+        all [ :on-exit do :on-exit self ]
+    ]
+    on-entry: func [][ print ["Entering paralell machine" name ]]
+    on-exit: func [][ print ["Exiting paralell machine" name ]]
+
+    update: func [
+        ;/local new-state
+    ][
+        ; The machines in paralell shall not have any transitions.
+        ; 1. Run the children's update
+
+        foreach [machine-name machine]  machines [
+            if error? e: try [ machine/update ] [
+                ? machine
+                print [ "Error in updating machine" name "submachine" machine-name ]
+                halt
+            ]
+        ]
+    ]
+    machines: none
+    to-string: func [
+        /level lvl {Number of indents}
+        /local pre result sep transitions-to-string skip-chars lstate
+    ] [
+    ]
+
+    full-state-path: func [
+        {Returns the full path to the active inner part of the machine}
+        /local ps
+    ][
+        ps: copy []
+        foreach [ _ machine ] machines [ append/only ps machine/full-state-path ]
+        if 2 > length? ps [ return make path! ps ]
+        return append/only make path! [ name ] ps 
+    ]
+
+]
+
+machine!: make base-state! [
     type: 'state
     active-state: none
     default-state: none
     states: none
-    transitions: []
-    init:
     in-handler: func [  ;  This is for internal use. The script "user" script is "on-entry"
         /local
             the-active-state
@@ -133,7 +213,7 @@ machine!: make object! [
     ]
         
     transfer: func [
-        {The states transfer clauses are evaluated and follows possible logical-states.
+        {The states transfer clauses are evaluated and follows possible logic-states.
          If it finally lands on a state, the state is returned.}
         state [object!] {One of which transfer to evaluate}
         /history hist  {A list of states that has been touched.  If a landing state is in the
@@ -180,7 +260,11 @@ machine!: make object! [
             ; Get in to the new branch
             active-state/in-handler
         ][
-            return active-state/update
+            if error? e: try [ active-state/update ] [
+                print [ "Error in updating machine" name "submachine" active-state/name ]
+                halt
+            ]
+                
         ]
         
     ]
@@ -192,8 +276,6 @@ machine!: make object! [
             to-path to-word name
             any [ all [ active-state active-state/full-state-path ] to-path []]
     ]
-
-    parent: none
 
     to-string: func [
         /level lvl {Number of indents}
@@ -279,12 +361,6 @@ transition!: make object! [
     ]
 ]
 
-logic-state!: make object! [
-    type: 'logic-state
-    name: none
-    transitions: []
-    parent: none
-]
 
 new-logic-state: func [ name [ word! string! ]  /local state ][
     state: make logic-state!  compose [
@@ -354,11 +430,15 @@ get-transition-defs: func [
                 second from 
                 second to
                 (first from) = (first to)
-                not empty? branch/states
+                not empty? any [ all [in branch 'states branch/states ] all [ in branch 'machines branch/machines ] ]
             ]
         ][
         ; print [from branch/name]
-        branch: branch/states/(first from)
+        either branch/type = 'state [
+            branch: branch/states/(first from)
+        ][
+            branch: branch/machines/(first from)
+        ]
         from: next from
         to: next to
     ]
@@ -461,22 +541,29 @@ add-state: func [
     state [object!]
     /initial
     /default
+    /local collection
 ][
-    states: any [ machine/states object []]
+    collection:
+        either machine/type = 'state  [
+            machine/states: any [ machine/states object []]
+        ][
+            machine/machines: any [ machine/machines object []]
+        ]
 
     ; Uneless nothing given, first state is active at start
-    if empty? states [ machine/active-state: state ]
 
-    repend states [ name state ]
-    machine/states: states
+    repend collection [ name state ]
     state/parent: machine
     state/name: to-word name
 
-    if initial [
-        machine/active-state: machine/states/(name)
-    ]
-    if default [
-        machine/default-state: name
+    if machine/type = 'state [
+        machine/active-state: any [ machine/active-state state ]
+        if initial [
+            machine/active-state: machine/states/(name)
+        ]
+        if default [
+            machine/default-state: name
+        ]
     ]
 ]
     
@@ -508,11 +595,15 @@ parse-machine: func [
     ]
 
     p-state: [
-        'state set f-name word! 
-        (
-            state: make machine! [ name: f-name parent: machine ]
-            add-state machine f-name state
-        )
+        [ 'state
+            ( state: make machine! [ parent: machine ])
+        | 'paralell
+            ( state: make paralell-machine! [ parent: machine ])
+        ]
+        set f-name word!  (
+                state/name: f-name
+                add-state machine f-name state
+            )
         any [
             'default
             ( print [ "Default state: " f-name ] machine/default-state: f-name )
@@ -533,13 +624,17 @@ parse-machine: func [
             )
         ]
     ]
-    p-logical-state: [
-        'logical-state set f-name word! 
+    p-logic-state: [
+        set type [ 'logic-state | 'collect ] set f-name word! 
                 (
-                    state: make logic-state! [ name: f-name parent: machine]
+                    object-type: select [
+                        logic-state logic-state!
+                        collect collect-state! ] type
+                    state: make get object-type [ name: f-name parent: machine]
                     machine/states: any [ machine/states object [] ]
                     repend machine/states [ f-name state ]
-                )
+                ) |
+            
         any [
                 p-transition
         ]
@@ -549,7 +644,9 @@ parse-machine: func [
         any [
             here:
             p-state 
-            | p-logical-state
+            | p-logic-state
+            | end
+            | ( throw remold [ "Could not parse all machine" :here ] )
         ]
     ] [
         dbg: machine
@@ -558,4 +655,4 @@ parse-machine: func [
     return machine
 ]
 
-; vim: sw=4 ts=4 expandtab syntax=rebol:
+; vim: sw=4 ts=4 expandtab syntax=rebol lisp:

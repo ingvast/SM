@@ -8,7 +8,7 @@ REBOL [
 random/seed 12135
 debug: true
 
-import SM
+do  %SM.reb
 
 root: make machine! [ name: 'root ]
 
@@ -71,7 +71,7 @@ testM: [
 	  entry  [ n: 5 ]
 	  exit [ n: n + 1 ]
 	  [ ; Substates to S1
-		logical-state a 
+		logic-state a 
 			transition S2 [ y = 0 ]
 			transition S1/S1a [ y = 1 ]
 			transition S2/S2a true
@@ -89,16 +89,14 @@ testM: [
 	[ 
 		state S2a
 		state S2b
-		logical-state a
-		logical-state b
+		logic-state a
+		logic-state b
 	]
 	tranition S1 [  ]
 	
-	logical-state a 
+	logic-state a 
 		transition 
 ]
-
-
 
 m1: parse-machine 'm1 [
 	state Start
@@ -109,9 +107,9 @@ m1: parse-machine 'm1 [
 			transition S true
 
 		]
-	logical-state one
+	logic-state one
 		transition two [ pr "Test one" n > 1 ]
-	logical-state two
+	logic-state two
 		transition Goal [ pr "Test two" n > 2 ]
 
 	state Goal
@@ -120,7 +118,36 @@ m1: parse-machine 'm1 [
 	state Fault
 		entry [ print [ "Should not be here " ] ]
 ]
-m1/init
-pr m1
 
-; vim: sw=4 ts=4 noexpandtab syntax=rebol:
+pr m1
+loop 10 [ m1/update ]
+
+; test a paralell state machine. Each paralelll submachine just repeats itself
+p1: parse-machine 'p1 [
+	paralell A
+        entry [ count: 0 ]
+		[
+			state M1
+				[
+					state S1
+						entry [ print "Into S1" ]
+						transition S1 true
+                        transition w1 [ count > 1 ]
+				]
+			state M2
+				[
+					state S2
+						entry [ print "Into S2" ]
+						transition S2 true
+                        transition w1 [ count > 5 ]
+				]
+            collect w1
+                transition B
+		]
+    state B
+        entry [ print "Done" ]
+]
+
+pr p1
+
+; vim: sw=4 ts=4 expandtab syntax=rebol lisp:
