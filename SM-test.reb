@@ -122,6 +122,7 @@ m1: parse-machine 'm1 [
 pr m1
 loop 10 [ m1/update ]
 
+halt
 ; test a paralell state machine. Each paralelll submachine just repeats itself
 p1: parse-machine 'p1 [
 	paralell A
@@ -132,17 +133,17 @@ p1: parse-machine 'p1 [
 					state S1
 						entry [ print "Into S1" ]
 						transition S1 true
-                        transition w1 [ count > 1 ]
+                        transition W1 [ count > 1 ]
 				]
 			state M2
 				[
 					state S2
 						entry [ print "Into S2" ]
 						transition S2 true
-                        transition w1 [ count > 5 ]
+                        transition W1 [ count > 5 ]
 				]
-            collect w1
-                transition B
+            collect W1
+                transition B true
 		]
     state B
         entry [ print "Done" ]

@@ -65,15 +65,10 @@ REBOL [
         Just make it straight forward, keep an eye on getting into a loop.
         
         }
-    TODO: {In the middle of redfining transitions from a function returning a new state
-        to a block of "transition":s having clause and to
-
-        There is somehting funny with which actions are run at entry.
-        }
-
     
 ]
 debug: false 
+dpr: func [ a ][ if debug [ pr a ] ]
 
 on-entry-default: on-exit-default: none
 if debug [
@@ -93,6 +88,10 @@ logic-state!: make base-state! [
     type: 'logic-state
 ]
 
+collect-state!: make base-state! [
+    type: 'collect-state
+]
+
 wait-state!: make base-state! [
     help: trim/auto 
            {A pseudo-state where threads meet. Whan all ended up there
@@ -110,7 +109,287 @@ branch-state!: make base-state! [
     type: 'branch
 ]
 
+machine!:
 paralell-machine!: make base-state! [
+    type: 'state
+    active-states: copy []
+    default-states: []
+    states: none
+    in-handler: func [  ;  This is for internal use. The script "user" script is "on-entry"
+        /local
+            the-active-state
+        ][
+        all [ :on-entry do :on-entry self ]
+        if states [
+            foreach active-state active-states [ active-state/in-handler ]
+        ]
+    ]
+    out-handler: func [
+        {Recursively leaves all substates}
+        /local
+            the-active-state
+    ][
+        foreach active-state active-states [
+            all [ active-state active-state/out-handler ]
+        ]
+
+        all [ :on-exit do :on-exit self ]
+        foreach default-state default-states [
+            active-state: states/(default-state)
+        ]
+    ]
+
+    on-entry: :on-entry-default
+    on-exit: :on-exit-default
+
+    get-state: func [
+        {Returns the path with this path as reference}
+            path [word! path!]
+            /local s stmp name
+    ] [
+        if word? path [
+            return get in states path
+        ]
+        s: self
+        foreach nme path [
+            unless stmp: get in s/states nme [
+                throw reform [ "Not a valid path:" path "starting from" full-path self "Problem at " nme ]
+            ]
+            s: stmp
+        ]
+        return s
+    ]
+        
+    transfer: func [
+        {The states transfer clauses are evaluated and follows possible logic-states.
+         If it finally lands on a state, the state is returned.}
+        state [object!] {One of which transfer to evaluate}
+        /history hist  {A list of states that has been touched.  If a landing state is in the
+                        list, it will be as not evaluated to true.}
+        /local to
+    ][
+        unless history [ hist: copy [] ]
+        foreach tran state/transitions [
+            ;print [ "Evaluating transition" tran/to-string ]
+            if tran/clause [
+                to: find-state state/parent tran/to
+                unless :to [ throw reform [ "Tried to transfer to a non-existing state:" tran/to ] ]
+                if to/type = 'state [ return to ]
+                if find hist to [ throw reform [ "A logic loop including:" history ] ]
+                append hist state
+                return transfer/history to hist
+            ]
+        ]
+        none
+    ]
+        
+    update: func [
+        {Runs transition clauses for each of the sub-machines.  Performs the transitions.}
+        /local new-states e transition-defs new
+    ][
+        print [ "Running update on"]
+        dpr self
+        if empty? active-states [ return none]  ; it's a leaf
+
+        new-states: clear []
+        foreach active-state active-states [ 
+            append new-states transfer active-state
+        ]
+
+        ? new-states
+        print "Checking"
+        either any new-states [
+
+            transitions-defs: clear []
+            repeat i length? new-states [
+                print ["Active-states #" i ]
+                pr active-states/:i
+                if active-states/:i [
+                    new: get-transition-defs active-states/:i full-path new-states/:i
+                    print "Gotten new"
+                    halt
+                    append/only transition-defs new
+                    print appended
+                ]
+                pr new-states/:i
+            ]
+            ? transition-defs
+
+            ; Leave the active branch
+            machine: transition-defs/branch-state
+            ? machines
+            dbg: self
+            foreach machine machines [
+                machine/active-states/out-handler
+            ]
+
+            ; Mark the new branch active
+            foreach tran transition-defs/down [
+                machine: machine/active-state: machine/states/(tran)
+            ]
+            ; Get in to the new branch
+            leaving-state/in-handler
+        ][
+            foreach active-state active-states [
+                if error? e: try [ active-state/update ] [
+                    print [ "Error in updating machine" name "submachine" active-state/name ]
+                    halt
+                    return e
+                ]
+            ]
+        ]
+
+
+        comment {
+            new-states: map-each active-state active-states [ transfer active-state ]
+            either any new-states [
+
+                print [ "Transitions from" name ]
+                foreach s new-states [ 
+    ? s
+                    either s [
+                        print [  "to:" s/name]
+                    ][
+                        print [ "No transition" ]
+                    ]
+                ]
+
+                transition-defs: []
+                print [ "Length of active states:" length? active-states ]
+                repeat n length? active-states [
+                    ? n
+                    ? active-states/:n
+                    ? new-states/:n
+                    append transition-defs get-transition-defs active-states/:n full-path new-states/:n
+                ]
+
+                ; Leave the active branch
+                machines: transition-defs/branch-state
+                foreach machine machines [
+                    machine/active-states/out-handler
+                ]
+
+                ; Mark the new branch active
+                foreach tran transition-defs/down [
+                    activate-branch-down transition-defs/down
+                ]
+                ; Get in to the new branch
+                active-state/in-handler
+            ][
+                foreach active-state active-states [
+                    if error? e: try [ active-state/update ] [
+                        print [ "Error in updating machine" name "submachine" active-state/name ]
+                        return e
+                    ]
+                ]
+            ]
+        }
+    ]
+
+[
+abd: func [path ] [
+    m: first+ path
+    print [m] 
+    either block? m [
+        foreach a m [
+            abd a
+        ]
+    ][
+        unless empty? path [abd path]
+    ]
+]
+]
+    activate-branch-down: func [
+        {Sets the active state according to path}
+        path [ path! ]
+        /local m
+    ][
+        m: first+ path
+        change active-states m
+        if all [ block? m  not tail? path ] [
+            throw make error! "Path can have block only as last element"
+        ]
+        foreach machine active-states [
+            activate-branch-down machine
+        ]
+    ]
+
+    full-state-path: func [
+        {Returns the full path to the active inner part of the machine}
+        /local ps
+    ][
+        ps: copy []
+        foreach [ _ machine ] machines [ append/only ps machine/full-state-path ]
+        if 2 > length? ps [ return make path! ps ]
+        return append/only make path! [ name ] ps 
+    ]
+
+    to-string: func [
+        /level lvl {Number of indents}
+        /local pre result sep transitions-to-string skip-chars lstate l-string
+    ] [
+
+        transitions-to-string: func [ transitions pre ] [
+            append result rejoin [ pre sep "transitions:" newline]
+            foreach tran transitions [
+                switch type? :tran/clause [
+                    #(function!) [ append result rejoin [ pre sep sep body-of :tran/clause " -> " tran/to  newline ] ]
+                    #(logic!) [ append result rejoin [ pre sep sep "Always -> " tran/to  newline ] ]
+                ]
+            ]
+        ]
+
+        sep: "  "
+        l-string: func [ o ][
+            case [
+                function? :o [ return rejoin [ "func" mold spec-of :o mold body-of :o ]]
+                block? :o [ return mold o ]
+            ]
+        ]
+        lvl: any [ lvl 0 ]
+        pre: copy "" loop lvl [ append pre sep ]
+        result: rejoin [
+            pre any [ name "root" ] ":" newline
+            either  :on-entry [ rejoin [pre sep "on-entry:" " " l-string :on-entry newline ] ] [""]
+            either  :on-exit  [ rejoin [pre sep "on-exit:" " " l-string :on-exit newline ] ] [""]
+        ]
+        if not empty? :transitions  [
+            transitions-to-string transitions pre
+        ]
+        if states [
+
+            append result rejoin [ pre sep "states:" newline ]
+
+            foreach [ state-name lstate ] states [
+                ;lstate: get state-name
+                if lstate/type = 'state [
+                    skip-chars: 0
+                    ; append result  ""
+                    if find default-states lstate/name  [
+                        append result "*"
+                        skip-chars: skip-chars + 1
+                    ]
+                    if find active-states lstate [
+                        append result "->"
+                        skip-chars: skip-chars + 2
+                    ]
+                    append result remove/part lstate/to-string/level lvl + 2  skip-chars
+                ]
+            ]
+            foreach state-name states [
+                state: get state-name
+                if state/type = 'logic-state [
+                    ;append result  ""
+                    append result  rejoin [ pre sep sep "#" state/name ":" newline ]
+                    transitions-to-string state/transitions join join pre sep sep
+                ]
+            ]
+        ]
+        result
+    ]
+]
+
+old-paralell: [
     help: trim/auto
         {A group of states. Each state is running separately to form paralell threads.}
     
@@ -164,7 +443,7 @@ paralell-machine!: make base-state! [
 
 ]
 
-machine!: make base-state! [
+machine!-old: make base-state! [
     type: 'state
     active-state: none
     default-state: none
@@ -241,7 +520,6 @@ machine!: make base-state! [
         unless active-state [ return none]  ; it's a leaf
 
         new-state: transfer active-state 
-;if dbg [ trace off ? self halt ]
 
         either new-state [
 
@@ -412,6 +690,7 @@ add-transition: func [
 
 get-transition-defs: func [
     {Calculates where the transition branches and the path to the inner new state
+    Returns the Branch point and the path from branch to goal
     This is what to expect
         a a/b -> a b
         a/b a -> a none
@@ -421,9 +700,11 @@ get-transition-defs: func [
     to [path!]
     /local branch
 ][
+    print "Calculating the way transitions should go"
     branch: get-root from
     from: full-path from
-    first+ from first+ to
+    first+ from
+    first+ to
     
     while [
         all [
@@ -541,29 +822,25 @@ add-state: func [
     state [object!]
     /initial
     /default
-    /local collection
+    /local
 ][
-    collection:
-        either machine/type = 'state  [
-            machine/states: any [ machine/states object []]
-        ][
-            machine/machines: any [ machine/machines object []]
-        ]
+    machine/states: any [ machine/states object [] ]
+    repend machine/states [ name state ]
 
     ; Uneless nothing given, first state is active at start
 
-    repend collection [ name state ]
     state/parent: machine
     state/name: to-word name
 
-    if machine/type = 'state [
-        machine/active-state: any [ machine/active-state state ]
-        if initial [
-            machine/active-state: machine/states/(name)
-        ]
-        if default [
-            machine/default-state: name
-        ]
+    if empty? machine/active-states [
+        append machine/active-states state
+    ]
+
+    if initial [
+        append machine/active-states machine/states/(name)
+    ]
+    if default [
+        append machine/default-states name
     ]
 ]
     
@@ -606,7 +883,7 @@ parse-machine: func [
             )
         any [
             'default
-            ( print [ "Default state: " f-name ] machine/default-state: f-name )
+            ( print [ "Default state: " f-name ] append machine/default-states f-name )
             |
             'initial
             ( print [ "Initial state: " f-name ] machine/active-state: state )
@@ -633,8 +910,9 @@ parse-machine: func [
                     state: make get object-type [ name: f-name parent: machine]
                     machine/states: any [ machine/states object [] ]
                     repend machine/states [ f-name state ]
-                ) |
-            
+                    
+                )
+        |
         any [
                 p-transition
         ]
@@ -649,7 +927,6 @@ parse-machine: func [
             | ( throw remold [ "Could not parse all machine" :here ] )
         ]
     ] [
-        dbg: machine
         throw reform [ "Error in machine parsing at:" mold copy/part here 2 ]
     ]
     return machine
