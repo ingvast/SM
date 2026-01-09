@@ -2,221 +2,231 @@ import yaml
 import sys
 
 # ---------------------------------------------------------
-# TEMPLATES (C Code Snippets)
+# TEMPLATES
 # ---------------------------------------------------------
-HEADER_TEMPLATE = """
+HEADER = """
 #ifndef STATEMACHINE_H
 #define STATEMACHINE_H
-
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
-// Context Structure: Holds your machine's variables
-typedef struct {
-    %s
-} SM_Context;
-
-// State Function Pointer Definition
+typedef struct SM_Context SM_Context;
 typedef void (*StateFunc)(SM_Context* ctx);
 
-// State Machine Struct
+struct SM_Context {
+    void* owner;         
+    
+    // User Context Variables
+    %s
+    
+    // Hierarchy Pointers
+    %s
+};
+
 typedef struct {
-    StateFunc current_state;
-    StateFunc next_state;
     SM_Context ctx;
+    StateFunc root;
 } StateMachine;
 
-// Function Prototypes
 void sm_init(StateMachine* sm);
 void sm_tick(StateMachine* sm);
 
 #endif
 """
 
-SOURCE_TEMPLATE = """
+SOURCE_TOP = """
 #include "statemachine.h"
 
-// Forward declarations of state functions
+// Forward Declarations
 %s
 
 // --- State Logic ---
-%s
-
-// --- Core Machine Logic ---
-
-void sm_init(StateMachine* sm) {
-    // Initialize Context
-    // (In a real scenario, you might memset 0 here)
-    
-    // Set initial state
-    sm->current_state = state_%s_entry;
-    sm->next_state = NULL;
-}
-
-void sm_tick(StateMachine* sm) {
-    if (sm->current_state != NULL) {
-        sm->current_state(&sm->ctx);
-    }
-    
-    // Check if a transition occurred
-    if (sm->next_state != NULL) {
-        // Execute the transition
-        sm->current_state = sm->next_state;
-        sm->next_state = NULL;
-        
-        // Immediately enter the new state
-        sm->current_state(&sm->ctx);
-    }
-}
 """
 
-STATE_FUNC_TEMPLATE = """
-// State: {name}
-void state_{name}_run(SM_Context* ctx); // Forward decl for run
-
-void state_{name}_entry(SM_Context* ctx) {{
-    // 1. Run the user's entry code
-    {entry_code}
-
-    // 2. UPDATE THE POINTER: Switch to the RUN function for the next tick
-    ((StateMachine*)ctx->owner)->current_state = state_{name}_run;
-
-    // 3. Run the logic immediately for this tick
-    state_{name}_run(ctx);
+LEAF_TEMPLATE = """
+void state_{full_name}_entry(SM_Context* ctx) {{
+    {history_save}
+    {entry}
+    ctx->{parent_ptr} = state_{full_name}_run;
+    state_{full_name}_run(ctx);
 }}
 
-void state_{name}_exit(SM_Context* ctx) {{
-    // EXIT CODE
-    {exit_code}
+void state_{full_name}_exit(SM_Context* ctx) {{
+    {exit}
 }}
 
-void state_{name}_run(SM_Context* ctx) {{
-    // RUN CODE (Repeated logic)
-    {run_code}
-
-    // TRANSITIONS
-    {transition_code}
+void state_{full_name}_run(SM_Context* ctx) {{
+    {run}
+    {transitions}
 }}
 """
 
-TRANSITION_TEMPLATE = """
-    if ({test}) {{
-        state_{current}_exit(ctx);
-        // We set the pointer for the NEXT tick (or immediate, depending on engine design)
-        // Here we return to the engine to handle the swap to avoid stack recursion depth issues
-        extern void state_{target}_entry(SM_Context*); // forward decl specific to this scope
-        // We cheat slightly and use a global or pass the SM struct. 
-        // For this simple version, we assume we need to return or set a flag.
-        // But to keep it pure C without globals, we need the SM struct. 
-        // For simplicity, we assume the user code sets a 'next_state' variable 
-        // but we can't easily access 'sm' here without passing it.
-        // Let's rely on a helper or just return.
+COMPOSITE_TEMPLATE = """
+void state_{full_name}_entry(SM_Context* ctx) {{
+    {history_save}
+    {entry}
+    
+    {set_parent}
+
+    // History vs Initial
+    if (({history}) && ctx->{self_hist_ptr} != NULL) {{
+        ctx->{self_hist_ptr}(ctx); // Resume saved child
+    }} else {{
+        state_{initial_target}_entry(ctx); // Default start
     }}
-"""
+}}
 
-# To make the generated C cleaner and robust, we will change the StateFunc signature 
-# in the generator logic below to allow returning the next state.
+void state_{full_name}_exit(SM_Context* ctx) {{
+    {exit}
+}}
+
+void state_{full_name}_run(SM_Context* ctx) {{
+    {run}
+    if (ctx->{self_ptr}) ctx->{self_ptr}(ctx);
+    {transitions}
+}}
+"""
 
 # ---------------------------------------------------------
 # GENERATOR LOGIC
 # ---------------------------------------------------------
 
-def generate_c_code(data):
-    states = data['states']
-    initial_state = data['initial']
-    context_vars = data.get('context', 'int dummy;')
+def flatten_name(path):
+    return "_".join(path)
 
-    # 1. Generate Forward Declarations
-    forward_decls = []
-    for name in states:
-        forward_decls.append(f"void state_{name}_entry(SM_Context* ctx);")
-
-    # 2. Generate State Functions
-    state_functions = []
+def resolve_target(current_path, target_str):
+    if target_str.startswith("root/"):
+        parts = target_str.split("/")
+        return "state_" + "_".join(parts)
+    if target_str.startswith(".../"):
+        parent = current_path[:-1] 
+        grandparent = parent[:-1]
+        target_clean = target_str.replace(".../", "")
+        return "state_" + "_".join(grandparent + [target_clean])
     
-    for name, logic in states.items():
-        entry_code = logic.get('entry', '// No entry code')
-        exit_code = logic.get('exit', '// No exit code')
-        run_code = logic.get('run', '// No run code')
-        
-        # Build Transitions
-        # We need a way to signal a state change. 
-        # In this simple pointer model, we will use a specific pattern:
-        # We need to access the 'sm' struct to set next_state. 
-        # For this prototype, we will assume the generated C header defines a macro or 
-        # we change the signature. Let's stick to the cleanest C approach:
-        # The transition code acts on 'ctx' or returns. 
-        
-        trans_logic = ""
-        transitions = logic.get('transitions', [])
-        
-        # To handle the 'transfer-to', we need a dirty trick in C or a clean engine.
-        # Clean engine: The state functions take (StateMachine* sm).
-        # Let's update the templates implicitly here.
-        
-        for t in transitions:
-            target = t['transfer_to']
-            test = t['test']
-            # Note: We cast ctx back to StateMachine* if we need to set next_state,
-            # but simpler is to expect the user to include the header and know the struct layout,
-            # or simply assume 'sm_set_next' exists.
-            # Let's generate specific code:
-            
-            trans_block = f"""
-    if ({test}) {{
-        state_{name}_exit(ctx);
-        // Hack: We need the function pointer for the target
-        extern void state_{target}_entry(SM_Context*);
-        // We need to tell the engine to switch. 
-        // In a flat machine, we can return the function pointer, 
-        // but void is requested. We will use a wrapper struct trick in V2.
-        // For now, let's inject a "hidden" global or assume the ctx has a back-pointer.
-        // Let's assume SM_Context has a void* owner;
-        ((StateMachine*)ctx->owner)->next_state = state_{target}_entry;
+    parent = current_path[:-1]
+    return "state_" + "_".join(parent + [target_str])
+
+def generate_state_machine(name_path, data, parent_ptrs, output_lists):
+    my_name = flatten_name(name_path)
+    
+    my_ptr_name = f"ptr_{my_name}" 
+    my_hist_name = f"hist_{my_name}"
+
+    parent_run_ptr = parent_ptrs[0] if parent_ptrs else None
+    parent_hist_ptr = parent_ptrs[1] if parent_ptrs else None
+
+    # History Save Code
+    if parent_hist_ptr:
+        hist_save_code = f"ctx->{parent_hist_ptr} = state_{my_name}_entry;"
+    else:
+        hist_save_code = "// Root: No parent history"
+
+    # Parent Set Code
+    if parent_run_ptr:
+        set_parent_code = f"ctx->{parent_run_ptr} = state_{my_name}_run;"
+    else:
+        set_parent_code = "// Root: Handled by sm_init"
+
+    # Transitions
+    trans_code = ""
+    for t in data.get('transitions', []):
+        target_func = resolve_target(name_path, t['transfer_to'])
+        # REMOVED: explicit extern declaration
+        trans_code += f"""
+    if ({t['test']}) {{
+        state_{my_name}_exit(ctx);
+        {target_func}_entry(ctx); 
         return; 
     }}"""
-            trans_logic += trans_block
 
-        func_body = STATE_FUNC_TEMPLATE.format(
-            name=name,
-            entry_code=entry_code,
-            exit_code=exit_code,
-            run_code=run_code,
-            transition_code=trans_logic,
-            current=name
+    is_composite = 'states' in data
+
+    if is_composite:
+        output_lists['context_ptrs'].append(f"StateFunc {my_ptr_name};")
+        output_lists['context_ptrs'].append(f"StateFunc {my_hist_name};")
+
+        initial_target = flatten_name(name_path + [data['initial']])
+        history_bool = "true" if data.get('history', False) else "false"
+        
+        func_body = COMPOSITE_TEMPLATE.format(
+            full_name=my_name,
+            entry=data.get('entry', ''),
+            exit=data.get('exit', ''),
+            run=data.get('run', ''),
+            transitions=trans_code,
+            history=history_bool,
+            self_ptr=my_ptr_name,
+            self_hist_ptr=my_hist_name,
+            initial_target=initial_target,
+            history_save=hist_save_code,
+            set_parent=set_parent_code
         )
-        state_functions.append(func_body)
+        output_lists['functions'].append(func_body)
+        
+        for child_name, child_data in data['states'].items():
+            generate_state_machine(name_path + [child_name], child_data, (my_ptr_name, my_hist_name), output_lists)
+            
+    else:
+        func_body = LEAF_TEMPLATE.format(
+            full_name=my_name,
+            entry=data.get('entry', ''),
+            exit=data.get('exit', ''),
+            run=data.get('run', ''),
+            transitions=trans_code,
+            history_save=hist_save_code,
+            parent_ptr=parent_run_ptr
+        )
+        output_lists['functions'].append(func_body)
 
-    # 3. Assemble Source
-    # We need to inject the "owner" pointer into the Context struct definition
-    context_vars_patched = "void* owner;\n" + context_vars
-    
-    header = HEADER_TEMPLATE % (context_vars_patched)
-    source = SOURCE_TEMPLATE % (
-        "\n".join(forward_decls),
-        "\n".join(state_functions),
-        initial_state
-    )
-
-    return header, source
+    # Add Forward Decls to global list
+    output_lists['forwards'].append(f"void state_{my_name}_entry(SM_Context* ctx);")
+    output_lists['forwards'].append(f"void state_{my_name}_run(SM_Context* ctx);")
+    output_lists['forwards'].append(f"void state_{my_name}_exit(SM_Context* ctx);")
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python generator.py machine.yaml")
+        print("Usage: python sm-builder.py <yaml_file>")
         sys.exit(1)
 
     with open(sys.argv[1], 'r') as f:
         data = yaml.safe_load(f)
 
-    header, source = generate_c_code(data)
+    outputs = {'context_ptrs': [], 'functions': [], 'forwards': []}
+    
+    root_data = {
+        'initial': data['initial'],
+        'states': data['states'],
+        'history': False, 
+        'entry': "// Root Entry",
+        'run': "// Root Run",
+        'exit': "// Root Exit"
+    }
+    
+    generate_state_machine(['root'], root_data, None, outputs)
+    
+    header = HEADER % (data.get('context', ''), "\n    ".join(outputs['context_ptrs']))
+    source = SOURCE_TOP % ("\n".join(outputs['forwards'])) + "\n".join(outputs['functions'])
+    
+    source += f"""
+void sm_init(StateMachine* sm) {{
+    memset(&sm->ctx, 0, sizeof(sm->ctx));
+    sm->ctx.owner = sm;
+    state_root_entry(&sm->ctx); 
+    sm->root = state_root_run; 
+}}
+
+void sm_tick(StateMachine* sm) {{
+    if (sm->root) sm->root(&sm->ctx);
+}}
+"""
 
     with open("statemachine.h", "w") as f:
         f.write(header)
-    
     with open("statemachine.c", "w") as f:
         f.write(source)
-
-    print("Generated statemachine.c and statemachine.h")
+    print("Generated clean nested statemachine.")
 
 if __name__ == "__main__":
     main()

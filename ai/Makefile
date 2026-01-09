@@ -1,6 +1,6 @@
 # Compiler settings
 CC = gcc
-CFLAGS = -Wall -Wextra -g -I.
+CFLAGS = -Wall -Wextra -gdwarf-4 -I.
 
 # The name of your final executable
 TARGET = controller
@@ -14,7 +14,7 @@ GEN_HEADER = statemachine.h
 
 # --- CHANGED: Tool and Input Names ---
 GENERATOR = sm-builder.py
-MODEL = first.yaml
+MODEL = nested-first.yaml
 
 # Combine all objects
 OBJS = $(MAIN_SRC:.c=.o) $(GEN_SRC:.c=.o)
