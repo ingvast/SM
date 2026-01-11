@@ -21,8 +21,8 @@ OBJS = $(MAIN_SRC:.c=.o) $(GEN_SRC:.c=.o)
 
 # ---------------------------------------------------------
 # RULES
-# ---------------------------------------------------------
 
+# Standard build
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
@@ -35,15 +35,21 @@ main.o: main.c $(GEN_HEADER)
 statemachine.o: $(GEN_SRC) $(GEN_HEADER)
 	$(CC) $(CFLAGS) -c $(GEN_SRC) -o statemachine.o
 
-# Detect changes in first.yaml or sm-builder.py
+# If input changes, regenerate C AND DOT
 $(GEN_SRC) $(GEN_HEADER): $(MODEL) $(GENERATOR)
-	@echo "Detected change in model. Regenerating state machine..."
-	uv run $(GENERATOR) $(MODEL)
+	@echo "Regenerating..."
+	uv run python3 $(GENERATOR) $(MODEL)
+
+# New Target: Generate and Open Diagram
+view: $(GEN_SRC)
+	dot -Tpng statemachine.dot -o statemachine.png
+	# Tries to open the image (works on Linux/Mac/Windows via generic commands)
+	@if [ -x "$$(command -v xdg-open)" ]; then xdg-open statemachine.png; \
+	elif [ -x "$$(command -v open)" ]; then open statemachine.png; \
+	else echo "Image created: statemachine.png"; fi
 
 clean:
-	@echo "Cleaning up..."
-	rm -f $(OBJS) $(TARGET) $(GEN_SRC) $(GEN_HEADER)
-
+	rm -f $(OBJS) $(TARGET) $(GEN_SRC) $(GEN_HEADER) statemachine.dot statemachine.png
 run: $(TARGET)
 	./$(TARGET)
 

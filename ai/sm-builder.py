@@ -2,7 +2,7 @@ import yaml
 import sys
 
 # ---------------------------------------------------------
-# TEMPLATES
+# C TEMPLATES (Same as before)
 # ---------------------------------------------------------
 HEADER = """
 #ifndef STATEMACHINE_H
@@ -69,11 +69,10 @@ void state_{full_name}_entry(SM_Context* ctx) {{
     
     {set_parent}
 
-    // History vs Initial
     if (({history}) && ctx->{self_hist_ptr} != NULL) {{
-        ctx->{self_hist_ptr}(ctx); // Resume saved child
+        ctx->{self_hist_ptr}(ctx);
     }} else {{
-        state_{initial_target}_entry(ctx); // Default start
+        state_{initial_target}_entry(ctx);
     }}
 }}
 
@@ -89,41 +88,47 @@ void state_{full_name}_run(SM_Context* ctx) {{
 """
 
 # ---------------------------------------------------------
-# GENERATOR LOGIC
+# UTILS
 # ---------------------------------------------------------
 
 def flatten_name(path):
     return "_".join(path)
 
 def resolve_target(current_path, target_str):
+    # Returns flattened name without "state_" prefix for DOT compatibility
     if target_str.startswith("root/"):
-        parts = target_str.split("/")
-        return "state_" + "_".join(parts)
+        return "_".join(target_str.split("/"))
+    
     if target_str.startswith(".../"):
         parent = current_path[:-1] 
         grandparent = parent[:-1]
         target_clean = target_str.replace(".../", "")
-        return "state_" + "_".join(grandparent + [target_clean])
+        return "_".join(grandparent + [target_clean])
     
     parent = current_path[:-1]
-    return "state_" + "_".join(parent + [target_str])
+    return "_".join(parent + [target_str])
+
+def resolve_target_c(current_path, target_str):
+    return "state_" + resolve_target(current_path, target_str)
+
+# ---------------------------------------------------------
+# C GENERATOR
+# ---------------------------------------------------------
 
 def generate_state_machine(name_path, data, parent_ptrs, output_lists):
     my_name = flatten_name(name_path)
-    
     my_ptr_name = f"ptr_{my_name}" 
     my_hist_name = f"hist_{my_name}"
 
     parent_run_ptr = parent_ptrs[0] if parent_ptrs else None
     parent_hist_ptr = parent_ptrs[1] if parent_ptrs else None
 
-    # History Save Code
+    # History & Parent Set
     if parent_hist_ptr:
         hist_save_code = f"ctx->{parent_hist_ptr} = state_{my_name}_entry;"
     else:
         hist_save_code = "// Root: No parent history"
 
-    # Parent Set Code
     if parent_run_ptr:
         set_parent_code = f"ctx->{parent_run_ptr} = state_{my_name}_run;"
     else:
@@ -132,10 +137,17 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists):
     # Transitions
     trans_code = ""
     for t in data.get('transitions', []):
-        target_func = resolve_target(name_path, t['transfer_to'])
-        # REMOVED: explicit extern declaration
+        target_func = resolve_target_c(name_path, t['transfer_to'])
+        
+        # Handle Python Boolean 'True' vs C 'true'
+        test_condition = t['test']
+        if test_condition is True:
+            test_condition = "true"
+        elif test_condition is False:
+            test_condition = "false"
+            
         trans_code += f"""
-    if ({t['test']}) {{
+    if ({test_condition}) {{
         state_{my_name}_exit(ctx);
         {target_func}_entry(ctx); 
         return; 
@@ -180,10 +192,78 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists):
         )
         output_lists['functions'].append(func_body)
 
-    # Add Forward Decls to global list
     output_lists['forwards'].append(f"void state_{my_name}_entry(SM_Context* ctx);")
     output_lists['forwards'].append(f"void state_{my_name}_run(SM_Context* ctx);")
     output_lists['forwards'].append(f"void state_{my_name}_exit(SM_Context* ctx);")
+
+# ---------------------------------------------------------
+# DOT GENERATOR (New Feature)
+# ---------------------------------------------------------
+
+def generate_dot_recursive(name_path, data, lines):
+    my_id = flatten_name(name_path)
+    is_composite = 'states' in data
+    
+    # Indentation for readability
+    indent = "    " * len(name_path)
+
+    if is_composite:
+        # Create a Cluster (subgraph)
+        lines.append(f"{indent}subgraph cluster_{my_id} {{")
+        lines.append(f"{indent}    label = \"{name_path[-1]}\";")
+        lines.append(f"{indent}    style=filled; color=lightgrey; node [style=filled,color=white];")
+        
+        # History Indicator
+        if data.get('history', False):
+             lines.append(f"{indent}    {my_id}_hist [shape=circle, label=\"H\", width=0.3];")
+
+        # Initial State Indicator
+        initial_child = flatten_name(name_path + [data['initial']])
+        lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
+        lines.append(f"{indent}    {my_id}_start -> {initial_child};")
+
+        # Recurse children
+        for child_name, child_data in data['states'].items():
+            generate_dot_recursive(name_path + [child_name], child_data, lines)
+        
+        lines.append(f"{indent}}}")
+    else:
+        # Leaf Node
+        lines.append(f"{indent}{my_id} [label=\"{name_path[-1]}\", shape=box];")
+
+    # Transitions
+    for t in data.get('transitions', []):
+        target_id = resolve_target(name_path, t['transfer_to'])
+        
+        # FIX: Robust string conversion
+        # 1. Get value (default to empty string if missing)
+        raw_test = t.get('test', '')
+        
+        # 2. Convert to string (handles int 1 or bool True from unquoted YAML)
+        label_str = str(raw_test)
+        
+        # 3. Escape quotes for DOT format
+        label = label_str.replace('"', '\\"')
+        
+        lines.append(f"{indent}{my_id} -> {target_id} [label=\"{label}\", fontsize=10];")
+
+def generate_dot_file(root_data):
+    lines = []
+    lines.append("digraph StateMachine {")
+    lines.append("    compound=true;")
+    lines.append("    fontname=\"Arial\";")
+    lines.append("    node [fontname=\"Arial\"];")
+    lines.append("    edge [fontname=\"Arial\"];")
+    
+    generate_dot_recursive(['root'], root_data, lines)
+    
+    lines.append("}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------
 
 def main():
     if len(sys.argv) < 2:
@@ -193,8 +273,7 @@ def main():
     with open(sys.argv[1], 'r') as f:
         data = yaml.safe_load(f)
 
-    outputs = {'context_ptrs': [], 'functions': [], 'forwards': []}
-    
+    # Prepare Data
     root_data = {
         'initial': data['initial'],
         'states': data['states'],
@@ -203,12 +282,13 @@ def main():
         'run': "// Root Run",
         'exit': "// Root Exit"
     }
-    
+
+    # 1. Generate C
+    outputs = {'context_ptrs': [], 'functions': [], 'forwards': []}
     generate_state_machine(['root'], root_data, None, outputs)
     
     header = HEADER % (data.get('context', ''), "\n    ".join(outputs['context_ptrs']))
     source = SOURCE_TOP % ("\n".join(outputs['forwards'])) + "\n".join(outputs['functions'])
-    
     source += f"""
 void sm_init(StateMachine* sm) {{
     memset(&sm->ctx, 0, sizeof(sm->ctx));
@@ -221,12 +301,17 @@ void sm_tick(StateMachine* sm) {{
     if (sm->root) sm->root(&sm->ctx);
 }}
 """
-
     with open("statemachine.h", "w") as f:
         f.write(header)
     with open("statemachine.c", "w") as f:
         f.write(source)
-    print("Generated clean nested statemachine.")
+
+    # 2. Generate DOT
+    dot_content = generate_dot_file(root_data)
+    with open("statemachine.dot", "w") as f:
+        f.write(dot_content)
+
+    print("Generated statemachine.c, .h, and .dot")
 
 if __name__ == "__main__":
     main()
