@@ -49,4 +49,4 @@ states:
             printf("   [Active] Motor spins... %d\n", ctx->counter);
         transitions:
           - test: ctx->counter == 3
-            transfer_to: .../idle # "..." means go up one level (to root/idle)
+            transfer_to: ../idle # "..." means go up one level (to root/idle)

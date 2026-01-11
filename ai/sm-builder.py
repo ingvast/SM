@@ -2,7 +2,7 @@ import yaml
 import sys
 
 # ---------------------------------------------------------
-# C TEMPLATES (Same as before)
+# TEMPLATES
 # ---------------------------------------------------------
 HEADER = """
 #ifndef STATEMACHINE_H
@@ -11,12 +11,20 @@ HEADER = """
 #include <stdbool.h>
 #include <string.h>
 
+#define TOTAL_STATES %d
+
 typedef struct SM_Context SM_Context;
 typedef void (*StateFunc)(SM_Context* ctx);
 
 struct SM_Context {
-    void* owner;         
+    void* owner;
     
+    // System Time (User must update this in main loop!)
+    double now; 
+    
+    // Array to store entry timestamp for every state ID
+    double state_timers[TOTAL_STATES];
+
     // User Context Variables
     %s
     
@@ -43,9 +51,28 @@ SOURCE_TOP = """
 
 // --- State Logic ---
 """
+# COMMON HEADER for all state functions
+# Injects: Unused suppression, Name strings, and Time calculation
+FUNC_PREAMBLE = """
+    // Suppress unused warning for context
+    (void)ctx;
+
+    // Reflection helpers
+    const char* state_name = "{short_name}";
+    const char* state_full_name = "{full_name}";
+    (void)state_name;       // Suppress unused warning
+    (void)state_full_name;  // Suppress unused warning
+
+    // Time helper (Duration since entry)
+    double time = ctx->now - ctx->state_timers[{state_id}];
+    (void)time;             // Suppress unused warning
+"""
 
 LEAF_TEMPLATE = """
 void state_{full_name}_entry(SM_Context* ctx) {{
+    // 1. Snapshot time
+    ctx->state_timers[{state_id}] = ctx->now;
+    {preamble}
     {history_save}
     {entry}
     ctx->{parent_ptr} = state_{full_name}_run;
@@ -53,10 +80,12 @@ void state_{full_name}_entry(SM_Context* ctx) {{
 }}
 
 void state_{full_name}_exit(SM_Context* ctx) {{
+    {preamble}
     {exit}
 }}
 
 void state_{full_name}_run(SM_Context* ctx) {{
+    {preamble}
     {run}
     {transitions}
 }}
@@ -64,6 +93,9 @@ void state_{full_name}_run(SM_Context* ctx) {{
 
 COMPOSITE_TEMPLATE = """
 void state_{full_name}_entry(SM_Context* ctx) {{
+    // 1. Snapshot time
+    ctx->state_timers[{state_id}] = ctx->now;
+    {preamble}
     {history_save}
     {entry}
     
@@ -77,10 +109,12 @@ void state_{full_name}_entry(SM_Context* ctx) {{
 }}
 
 void state_{full_name}_exit(SM_Context* ctx) {{
+    {preamble}
     {exit}
 }}
 
 void state_{full_name}_run(SM_Context* ctx) {{
+    {preamble}
     {run}
     if (ctx->{self_ptr}) ctx->{self_ptr}(ctx);
     {transitions}
@@ -95,27 +129,44 @@ def flatten_name(path):
     return "_".join(path)
 
 def resolve_target(current_path, target_str):
-    # Returns flattened name without "state_" prefix for DOT compatibility
     if target_str.startswith("root/"):
-        return "_".join(target_str.split("/"))
+        parts = target_str.split("/")
+        return "state_" + "_".join(parts)
     
-    if target_str.startswith(".../"):
+    # UPDATED: Handle '..' (Parent)
+    if target_str.startswith("../"):
         parent = current_path[:-1] 
         grandparent = parent[:-1]
-        target_clean = target_str.replace(".../", "")
-        return "_".join(grandparent + [target_clean])
+        target_clean = target_str.replace("../", "")
+        return "state_" + "_".join(grandparent + [target_clean])
     
     parent = current_path[:-1]
-    return "_".join(parent + [target_str])
+    return "state_" + "_".join(parent + [target_str])
 
-def resolve_target_c(current_path, target_str):
-    return "state_" + resolve_target(current_path, target_str)
+def resolve_target_dot(current_path, target_str):
+    # Same logic but just returns ID string for DOT
+    if target_str.startswith("root/"):
+        return "_".join(target_str.split("/"))
+    if target_str.startswith("../"):
+        parent = current_path[:-1] 
+        grandparent = parent[:-1]
+        target_clean = target_str.replace("../", "")
+        return "_".join(grandparent + [target_clean])
+    parent = current_path[:-1]
+    return "_".join(parent + [target_str])
 
 # ---------------------------------------------------------
 # C GENERATOR
 # ---------------------------------------------------------
 
+# Global counter for State IDs
+state_counter = 0
+
 def generate_state_machine(name_path, data, parent_ptrs, output_lists):
+    global state_counter
+    my_id_num = state_counter
+    state_counter += 1
+
     my_name = flatten_name(name_path)
     my_ptr_name = f"ptr_{my_name}" 
     my_hist_name = f"hist_{my_name}"
@@ -123,31 +174,30 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists):
     parent_run_ptr = parent_ptrs[0] if parent_ptrs else None
     parent_hist_ptr = parent_ptrs[1] if parent_ptrs else None
 
-    # History & Parent Set
-    if parent_hist_ptr:
-        hist_save_code = f"ctx->{parent_hist_ptr} = state_{my_name}_entry;"
-    else:
-        hist_save_code = "// Root: No parent history"
+    # Helpers for templates
+    hist_save_code = f"ctx->{parent_hist_ptr} = state_{my_name}_entry;" if parent_hist_ptr else ""
+    set_parent_code = f"ctx->{parent_run_ptr} = state_{my_name}_run;" if parent_run_ptr else ""
 
-    if parent_run_ptr:
-        set_parent_code = f"ctx->{parent_run_ptr} = state_{my_name}_run;"
-    else:
-        set_parent_code = "// Root: Handled by sm_init"
+    # Generate Preamble (Vars available in all functions)
+    preamble_filled = FUNC_PREAMBLE.format(
+        short_name=name_path[-1],
+        full_name=my_name,
+        state_id=my_id_num
+    )
 
     # Transitions
     trans_code = ""
     for t in data.get('transitions', []):
-        target_func = resolve_target_c(name_path, t['transfer_to'])
+        target_func = resolve_target(name_path, t['transfer_to'])
         
-        # Handle Python Boolean 'True' vs C 'true'
-        test_condition = t['test']
-        if test_condition is True:
-            test_condition = "true"
-        elif test_condition is False:
-            test_condition = "false"
-            
+        # Robust boolean handling
+        test_val = t['test']
+        if test_val is True: test_cond = "true"
+        elif test_val is False: test_cond = "false"
+        else: test_cond = str(test_val)
+
         trans_code += f"""
-    if ({test_condition}) {{
+    if ({test_cond}) {{
         state_{my_name}_exit(ctx);
         {target_func}_entry(ctx); 
         return; 
@@ -164,6 +214,8 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists):
         
         func_body = COMPOSITE_TEMPLATE.format(
             full_name=my_name,
+            state_id=my_id_num,
+            preamble=preamble_filled,
             entry=data.get('entry', ''),
             exit=data.get('exit', ''),
             run=data.get('run', ''),
@@ -183,6 +235,8 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists):
     else:
         func_body = LEAF_TEMPLATE.format(
             full_name=my_name,
+            state_id=my_id_num,
+            preamble=preamble_filled,
             entry=data.get('entry', ''),
             exit=data.get('exit', ''),
             run=data.get('run', ''),
@@ -197,73 +251,39 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists):
     output_lists['forwards'].append(f"void state_{my_name}_exit(SM_Context* ctx);")
 
 # ---------------------------------------------------------
-# DOT GENERATOR (New Feature)
+# DOT GENERATOR
 # ---------------------------------------------------------
-
 def generate_dot_recursive(name_path, data, lines):
     my_id = flatten_name(name_path)
     is_composite = 'states' in data
-    
-    # Indentation for readability
     indent = "    " * len(name_path)
 
     if is_composite:
-        # Create a Cluster (subgraph)
         lines.append(f"{indent}subgraph cluster_{my_id} {{")
         lines.append(f"{indent}    label = \"{name_path[-1]}\";")
         lines.append(f"{indent}    style=filled; color=lightgrey; node [style=filled,color=white];")
-        
-        # History Indicator
         if data.get('history', False):
              lines.append(f"{indent}    {my_id}_hist [shape=circle, label=\"H\", width=0.3];")
-
-        # Initial State Indicator
         initial_child = flatten_name(name_path + [data['initial']])
         lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
         lines.append(f"{indent}    {my_id}_start -> {initial_child};")
-
-        # Recurse children
         for child_name, child_data in data['states'].items():
             generate_dot_recursive(name_path + [child_name], child_data, lines)
-        
         lines.append(f"{indent}}}")
     else:
-        # Leaf Node
         lines.append(f"{indent}{my_id} [label=\"{name_path[-1]}\", shape=box];")
 
-    # Transitions
     for t in data.get('transitions', []):
-        target_id = resolve_target(name_path, t['transfer_to'])
-        
-        # FIX: Robust string conversion
-        # 1. Get value (default to empty string if missing)
-        raw_test = t.get('test', '')
-        
-        # 2. Convert to string (handles int 1 or bool True from unquoted YAML)
-        label_str = str(raw_test)
-        
-        # 3. Escape quotes for DOT format
-        label = label_str.replace('"', '\\"')
-        
+        target_id = resolve_target_dot(name_path, t['transfer_to'])
+        # Clean label for Dot
+        label = str(t.get('test', '')).replace('"', '\\"')
         lines.append(f"{indent}{my_id} -> {target_id} [label=\"{label}\", fontsize=10];")
 
 def generate_dot_file(root_data):
-    lines = []
-    lines.append("digraph StateMachine {")
-    lines.append("    compound=true;")
-    lines.append("    fontname=\"Arial\";")
-    lines.append("    node [fontname=\"Arial\"];")
-    lines.append("    edge [fontname=\"Arial\"];")
-    
+    lines = ["digraph StateMachine {", "    compound=true; fontname=\"Arial\"; node [fontname=\"Arial\"]; edge [fontname=\"Arial\"];"]
     generate_dot_recursive(['root'], root_data, lines)
-    
     lines.append("}")
     return "\n".join(lines)
-
-
-# ---------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------
 
 def main():
     if len(sys.argv) < 2:
@@ -273,7 +293,7 @@ def main():
     with open(sys.argv[1], 'r') as f:
         data = yaml.safe_load(f)
 
-    # Prepare Data
+    # Wrap root
     root_data = {
         'initial': data['initial'],
         'states': data['states'],
@@ -283,11 +303,19 @@ def main():
         'exit': "// Root Exit"
     }
 
-    # 1. Generate C
+    # Generate C
     outputs = {'context_ptrs': [], 'functions': [], 'forwards': []}
     generate_state_machine(['root'], root_data, None, outputs)
     
-    header = HEADER % (data.get('context', ''), "\n    ".join(outputs['context_ptrs']))
+    # --- FIX START ---
+    # We populate all 3 placeholders (%d, %s, %s) in one go
+    header = HEADER % (
+        state_counter,
+        data.get('context', ''), 
+        "\n    ".join(outputs['context_ptrs'])
+    )
+    # --- FIX END ---
+
     source = SOURCE_TOP % ("\n".join(outputs['forwards'])) + "\n".join(outputs['functions'])
     source += f"""
 void sm_init(StateMachine* sm) {{
@@ -306,7 +334,7 @@ void sm_tick(StateMachine* sm) {{
     with open("statemachine.c", "w") as f:
         f.write(source)
 
-    # 2. Generate DOT
+    # Generate DOT
     dot_content = generate_dot_file(root_data)
     with open("statemachine.dot", "w") as f:
         f.write(dot_content)
