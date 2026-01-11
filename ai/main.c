@@ -37,6 +37,11 @@ int main() {
         
         // Run logic
         sm_tick(&sm);
+
+    // ... inside while(1) ...
+        char state_str[256];
+        sm_get_state_str(&sm, state_str, sizeof(state_str));
+        printf("State: %s\n", state_str);
         
         // Force output to appear immediately (fix for "delayed printing")
         fflush(stdout);

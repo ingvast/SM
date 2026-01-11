@@ -16,7 +16,7 @@ HEADER = """
 typedef struct SM_Context SM_Context;
 typedef void (*StateFunc)(SM_Context* ctx);
 
-// --- Forward Declarations (Visible for Macros) ---
+// --- Forward Declarations ---
 %s
 
 struct SM_Context {
@@ -38,8 +38,9 @@ typedef struct {
 
 void sm_init(StateMachine* sm);
 void sm_tick(StateMachine* sm);
+void sm_get_state_str(StateMachine* sm, char* buffer, size_t max_len);
 
-// --- State Check Macros ---
+// --- Macros ---
 #define IN_STATE(statename) IN_STATE_##statename
 %s
 
@@ -49,8 +50,16 @@ void sm_tick(StateMachine* sm);
 SOURCE_TOP = """
 #include "statemachine.h"
 
-// --- User Includes / Helper Functions ---
+// --- User Includes ---
 %s
+
+// --- Helpers ---
+static void safe_strcat(char* dest, const char* src, size_t* offset, size_t max) {
+    size_t len = strlen(src);
+    if (*offset + len >= max) return; // Truncate safely
+    strcpy(dest + *offset, src);
+    *offset += len;
+}
 
 // --- State Logic ---
 """
@@ -155,9 +164,8 @@ void state_{c_name}_run(SM_Context* ctx) {{
 """
 
 # ---------------------------------------------------------
-# LOGIC
+# COMMON UTILS
 # ---------------------------------------------------------
-
 def flatten_c_name(path):
     return "_".join(path)
 
@@ -190,9 +198,88 @@ def get_exit_sequence(source_path, target_path):
     return exits
 
 # ---------------------------------------------------------
-# C GENERATOR
+# GENERATOR: INSPECTION (New)
 # ---------------------------------------------------------
+def generate_inspector(name_path, data, parent_ptr_name, output_list):
+    my_c_name = flatten_c_name(name_path)
+    func_name = f"inspect_{my_c_name}"
+    
+    # 1. Determine Display Name
+    # Root is special, we don't print "root" usually
+    if name_path == ['root']:
+        disp_name = "" 
+    else:
+        disp_name = "/" + name_path[-1]
 
+    body = f"void {func_name}(SM_Context* ctx, char* buf, size_t* off, size_t max) {{\n"
+    if disp_name:
+        body += f"    safe_strcat(buf, \"{disp_name}\", off, max);\n"
+
+    is_composite = 'states' in data
+    is_parallel = data.get('parallel', False)
+
+    if is_composite:
+        if is_parallel:
+            # Parallel: Print brackets and recurse all children
+            body += f"    safe_strcat(buf, \"[\", off, max);\n"
+            
+            # For parallel, we don't check pointers (they are all active).
+            # We assume regions are always running if parent is running.
+            children = list(data['states'].items())
+            for i, (child_name, child_data) in enumerate(children):
+                child_path = name_path + [child_name]
+                child_func = f"inspect_{flatten_c_name(child_path)}"
+                
+                # Recurse generation
+                # Note: Region pointers are in ctx, but we don't need to check them 
+                # because a Parallel state *implies* all regions are active.
+                # However, the region ITSELF (Composite OR) needs to check ITS pointer.
+                # We need to know the pointer name the region uses.
+                # In 'generate_state_machine', we named it ptr_root_active_m1.
+                region_ptr_name = f"ptr_{flatten_c_name(child_path)}"
+                
+                generate_inspector(child_path, child_data, region_ptr_name, output_list)
+                
+                body += f"    {child_func}(ctx, buf, off, max);\n"
+                if i < len(children) - 1:
+                    body += f"    safe_strcat(buf, \",\", off, max);\n"
+            
+            body += f"    safe_strcat(buf, \"]\", off, max);\n"
+
+        else:
+            # Standard OR: Check which child is active
+            # We need the pointer variable name for THIS state.
+            # If I am 'root', my pointer is 'ptr_root'.
+            # If I am 'active', my pointer is 'ptr_active'.
+            # Wait, the pointer variable is stored in the STRUCT.
+            # We need to know what variable name was assigned to ME to track my children.
+            # logic: my_ptr_name = ptr_{my_c_name}
+            my_ptr_name = f"ptr_{my_c_name}"
+            
+            # Recurse generation first so functions exist
+            for child_name, child_data in data['states'].items():
+                child_path = name_path + [child_name]
+                generate_inspector(child_path, child_data, my_ptr_name, output_list)
+            
+            # Generate Runtime Check
+            first = True
+            for child_name, child_data in data['states'].items():
+                child_path = name_path + [child_name]
+                child_c_name = flatten_c_name(child_path)
+                inspect_func = f"inspect_{child_c_name}"
+                run_func = f"state_{child_c_name}_run"
+                
+                else_prefix = "else " if not first else ""
+                body += f"    {else_prefix}if (ctx->{my_ptr_name} == {run_func}) {inspect_func}(ctx, buf, off, max);\n"
+                first = False
+
+    body += "}\n"
+    output_list.append(body)
+
+
+# ---------------------------------------------------------
+# GENERATOR: C LOGIC
+# ---------------------------------------------------------
 state_counter = 0
 
 def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_hooks):
@@ -206,12 +293,10 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
     parent_run_ptr = parent_ptrs[0] if parent_ptrs else None
     parent_hist_ptr = parent_ptrs[1] if parent_ptrs else None
 
-    # Macro Generation
     if parent_run_ptr:
         macro_def = f"#define IN_STATE_{my_c_name} (ctx->{parent_run_ptr} == state_{my_c_name}_run)"
         output_lists['macros'].append(macro_def)
 
-    # Helpers
     hist_save_code = f"ctx->{parent_hist_ptr} = state_{my_c_name}_entry;" if parent_hist_ptr else ""
     set_parent_code = f"ctx->{parent_run_ptr} = state_{my_c_name}_run;" if parent_run_ptr else ""
 
@@ -221,16 +306,12 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
         state_id=my_id_num
     )
 
-    # --- TRANSITIONS ---
     trans_code = ""
     for t in data.get('transitions', []):
         target_path_list = resolve_target_path(name_path, t['transfer_to'])
         target_c_func = "state_" + flatten_c_name(target_path_list)
-        
         exit_funcs = get_exit_sequence(name_path, target_path_list)
-        exit_calls = ""
-        for exit_func in exit_funcs:
-            exit_calls += f"        {exit_func}(ctx);\n"
+        exit_calls = "".join([f"        {exit_func}(ctx);\n" for exit_func in exit_funcs])
 
         test_val = t['test']
         if test_val is True: test_cond = "true"
@@ -256,15 +337,13 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
             p_entries = ""
             p_exits = ""
             p_ticks = ""
-            
             for child_name, child_data in data['states'].items():
                 child_path = name_path + [child_name]
                 child_c_name = flatten_c_name(child_path)
                 region_ptr_name = f"ptr_{child_c_name}"
 
                 if 'initial' not in child_data:
-                    print(f"Error: Region {child_name} missing 'initial'")
-                    sys.exit(1)
+                    sys.exit(f"Error: Region {child_name} missing 'initial'")
                 
                 initial_leaf = flatten_c_name(child_path + [child_data['initial']])
                 p_entries += f"    state_{initial_leaf}_entry(ctx);\n"
@@ -277,8 +356,7 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
                 c_name=my_c_name, state_id=my_id_num, preamble=preamble_filled,
                 hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
                 entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
-                transitions=trans_code,
-                set_parent=set_parent_code,
+                transitions=trans_code, set_parent=set_parent_code,
                 parallel_entries=p_entries, parallel_exits=p_exits, parallel_ticks=p_ticks,
                 history_save=hist_save_code
             )
@@ -298,25 +376,21 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
                 c_name=my_c_name, state_id=my_id_num, preamble=preamble_filled,
                 hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
                 entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
-                transitions=trans_code,
-                history=history_bool,
+                transitions=trans_code, history=history_bool,
                 self_ptr=my_ptr_name, self_hist_ptr=my_hist_name,
-                initial_target=initial_target,
-                history_save=hist_save_code,
+                initial_target=initial_target, history_save=hist_save_code,
                 set_parent=set_parent_code
             )
             output_lists['functions'].append(func_body)
             
             for child_name, child_data in data['states'].items():
                 generate_state_machine(name_path + [child_name], child_data, (my_ptr_name, my_hist_name), output_lists, global_hooks)
-            
     else:
         func_body = LEAF_TEMPLATE.format(
             c_name=my_c_name, state_id=my_id_num, preamble=preamble_filled,
             hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
             entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
-            transitions=trans_code,
-            history_save=hist_save_code,
+            transitions=trans_code, history_save=hist_save_code,
             parent_ptr=parent_run_ptr
         )
         output_lists['functions'].append(func_body)
@@ -326,10 +400,8 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
     output_lists['forwards'].append(f"void state_{my_c_name}_exit(SM_Context* ctx);")
 
 # ---------------------------------------------------------
-# DOT GENERATOR (Corrected Cluster Support)
+# DOT GENERATOR
 # ---------------------------------------------------------
-
-# 1. Pre-scan for composite IDs
 def find_composites(name_path, data, result_set):
     my_id = flatten_c_name(name_path)
     if 'states' in data:
@@ -343,104 +415,50 @@ def generate_dot_recursive(name_path, data, lines, composite_ids):
     indent = "    " * len(name_path)
 
     if is_composite:
-        # -- CLUSTER START --
         lines.append(f"{indent}subgraph cluster_{my_id} {{")
         lines.append(f"{indent}    label = \"{name_path[-1]}\";")
-        
-        # Styles
         if data.get('parallel', False):
-             # Parallel: Dashed
              lines.append(f"{indent}    style=dashed; color=black; penwidth=1.5; node [style=filled, fillcolor=white];")
-             # Initial Start Dot (Connects to all parallel children)
              lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
              for child_name, child_data in data['states'].items():
-                 # Connect to the START NODE of the child (if child is composite) or the child itself
-                 child_full_path = name_path + [child_name]
-                 child_id = flatten_c_name(child_full_path)
-                 
-                 # Target calculation for Initial Arrow
-                 if child_id in composite_ids:
-                     tgt = f"{child_id}_start"
-                     lhead = f"lhead=cluster_{child_id}"
-                 else:
-                     tgt = child_id
-                     lhead = ""
-                 
-                 attr = f"style=dashed, {lhead}" if lhead else "style=dashed"
-                 lines.append(f"{indent}    {my_id}_start -> {tgt} [{attr}];")
-
+                 child_id = flatten_c_name(name_path + [child_name])
+                 tgt = f"{child_id}_start" if child_id in composite_ids else child_id
+                 lhead = f"lhead=cluster_{child_id}" if child_id in composite_ids else ""
+                 lines.append(f"{indent}    {my_id}_start -> {tgt} [style=dashed, {lhead}];")
         else:
-             # Standard: Rounded
              lines.append(f"{indent}    style=rounded; color=black; penwidth=1.0; node [style=filled, fillcolor=white];")
              if data.get('history', False):
                  lines.append(f"{indent}    {my_id}_hist [shape=circle, label=\"H\", width=0.3];")
              
-             # Initial Arrow
-             init_child_path = name_path + [data['initial']]
-             init_child_id = flatten_c_name(init_child_path)
-             
-             if init_child_id in composite_ids:
-                 tgt = f"{init_child_id}_start"
-                 lhead = f"lhead=cluster_{init_child_id}"
-             else:
-                 tgt = init_child_id
-                 lhead = ""
-             
+             init_child_id = flatten_c_name(name_path + [data['initial']])
+             tgt = f"{init_child_id}_start" if init_child_id in composite_ids else init_child_id
+             lhead = f"lhead=cluster_{init_child_id}" if init_child_id in composite_ids else ""
              lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
              lines.append(f"{indent}    {my_id}_start -> {tgt} [{lhead}];")
 
-        # Recurse
         for child_name, child_data in data['states'].items():
             generate_dot_recursive(name_path + [child_name], child_data, lines, composite_ids)
-        
         lines.append(f"{indent}}}")
-        # -- CLUSTER END --
     else:
-        # Leaf Node
         lines.append(f"{indent}{my_id} [label=\"{name_path[-1]}\", shape=box, style=\"rounded,filled\", fillcolor=white];")
 
-    # Transitions
     for t in data.get('transitions', []):
         target_path = resolve_target_path(name_path, t['transfer_to'])
         target_id = flatten_c_name(target_path)
+        src = f"{my_id}_start" if is_composite else my_id
+        ltail = f"ltail=cluster_{my_id}" if is_composite else ""
+        tgt = f"{target_id}_start" if target_id in composite_ids else target_id
+        lhead = f"lhead=cluster_{target_id}" if target_id in composite_ids else ""
         
-        # LOGIC FOR COMPOUND EDGES (ltail / lhead)
-        # Source:
-        # If I am composite, arrow starts from my internal _start node, but uses ltail=cluster_me
-        if is_composite:
-            src = f"{my_id}_start"
-            ltail = f"ltail=cluster_{my_id}"
-        else:
-            src = my_id
-            ltail = ""
-
-        # Target:
-        # If target is composite, arrow points to its internal _start node, but uses lhead=cluster_tgt
-        if target_id in composite_ids:
-            tgt = f"{target_id}_start"
-            lhead = f"lhead=cluster_{target_id}"
-        else:
-            tgt = target_id
-            lhead = ""
-            
-        # Combine Attributes
-        attrs = []
-        if ltail: attrs.append(ltail)
-        if lhead: attrs.append(lhead)
-        
+        attrs = [x for x in [ltail, lhead] if x]
         raw_test = t.get('test', '')
-        label = str(raw_test).replace('"', '\\"')
-        attrs.append(f'label="{label}"')
+        attrs.append(f'label="{str(raw_test).replace('"', '\\"')}"')
         attrs.append('fontsize=10')
-        
-        attr_str = ", ".join(attrs)
-        
-        lines.append(f"{indent}{src} -> {tgt} [{attr_str}];")
+        lines.append(f"{indent}{src} -> {tgt} [{', '.join(attrs)}];")
 
 def generate_dot_file(root_data):
     composite_ids = set()
     find_composites(['root'], root_data, composite_ids)
-
     lines = ["digraph StateMachine {", "    compound=true; fontname=\"Arial\"; node [fontname=\"Arial\"]; edge [fontname=\"Arial\"];"]
     generate_dot_recursive(['root'], root_data, lines, composite_ids)
     lines.append("}")
@@ -451,8 +469,7 @@ def generate_dot_file(root_data):
 # ---------------------------------------------------------
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python sm-builder.py <yaml_file>")
-        sys.exit(1)
+        sys.exit("Usage: python sm-builder.py <yaml_file>")
 
     with open(sys.argv[1], 'r') as f:
         data = yaml.safe_load(f)
@@ -470,8 +487,17 @@ def main():
     includes = data.get('includes', '')
 
     outputs = {'context_ptrs': [], 'functions': [], 'forwards': [], 'macros': []}
+    
+    # 1. Generate Logic
     generate_state_machine(['root'], root_data, None, outputs, hooks)
     
+    # 2. Generate Inspectors
+    inspect_list = []
+    # Note: 'ptr_root' is defined implicitly in the struct as 'root' by init, 
+    # but for recursion we need the root of the hierarchy pointers.
+    # The root state itself manages 'ptr_root'.
+    generate_inspector(['root'], root_data, 'root', inspect_list)
+
     header = HEADER % (
         state_counter,
         "\n".join(outputs['forwards']), 
@@ -481,6 +507,10 @@ def main():
     )
 
     source = SOURCE_TOP % (includes) + "\n".join(outputs['functions'])
+    
+    # Add Inspector Logic
+    source += "\n// --- Inspection Logic ---\n"
+    source += "\n".join(inspect_list)
     
     source += f"""
 void sm_init(StateMachine* sm) {{
@@ -493,15 +523,22 @@ void sm_init(StateMachine* sm) {{
 void sm_tick(StateMachine* sm) {{
     if (sm->root) sm->root(&sm->ctx);
 }}
+
+void sm_get_state_str(StateMachine* sm, char* buffer, size_t max_len) {{
+    size_t offset = 0;
+    buffer[0] = '\\0';
+    // Start inspection from root
+    // We check if root is active
+    if (sm->root) inspect_root(&sm->ctx, buffer, &offset, max_len);
+}}
 """
     with open("statemachine.h", "w") as f:
         f.write(header)
     with open("statemachine.c", "w") as f:
         f.write(source)
 
-    dot_content = generate_dot_file(root_data)
     with open("statemachine.dot", "w") as f:
-        f.write(dot_content)
+        f.write(generate_dot_file(root_data))
 
     print("Generated statemachine.c, .h, and .dot")
 
