@@ -18,11 +18,7 @@ typedef void (*StateFunc)(SM_Context* ctx);
 
 struct SM_Context {
     void* owner;
-    
-    // System Time (User must update this in main loop!)
     double now; 
-    
-    // Array to store entry timestamp for every state ID
     double state_timers[TOTAL_STATES];
 
     // User Context Variables
@@ -46,56 +42,55 @@ void sm_tick(StateMachine* sm);
 SOURCE_TOP = """
 #include "statemachine.h"
 
-// Forward Declarations
+// --- User Includes / Helper Functions ---
+%s
+
+// --- Forward Declarations ---
 %s
 
 // --- State Logic ---
 """
-# COMMON HEADER for all state functions
-# Injects: Unused suppression, Name strings, and Time calculation
+
 FUNC_PREAMBLE = """
-    // Suppress unused warning for context
     (void)ctx;
-
-    // Reflection helpers
     const char* state_name = "{short_name}";
-    const char* state_full_name = "{full_name}";
-    (void)state_name;       // Suppress unused warning
-    (void)state_full_name;  // Suppress unused warning
-
-    // Time helper (Duration since entry)
+    const char* state_full_name = "{display_name}";
+    (void)state_name; 
+    (void)state_full_name;
     double time = ctx->now - ctx->state_timers[{state_id}];
-    (void)time;             // Suppress unused warning
+    (void)time; 
 """
 
 LEAF_TEMPLATE = """
-void state_{full_name}_entry(SM_Context* ctx) {{
-    // 1. Snapshot time
+void state_{c_name}_entry(SM_Context* ctx) {{
     ctx->state_timers[{state_id}] = ctx->now;
     {preamble}
+    {hook_entry}
     {history_save}
     {entry}
-    ctx->{parent_ptr} = state_{full_name}_run;
-    state_{full_name}_run(ctx);
+    ctx->{parent_ptr} = state_{c_name}_run;
+    state_{c_name}_run(ctx);
 }}
 
-void state_{full_name}_exit(SM_Context* ctx) {{
+void state_{c_name}_exit(SM_Context* ctx) {{
     {preamble}
+    {hook_exit}
     {exit}
 }}
 
-void state_{full_name}_run(SM_Context* ctx) {{
+void state_{c_name}_run(SM_Context* ctx) {{
     {preamble}
+    {hook_run}
     {run}
     {transitions}
 }}
 """
 
 COMPOSITE_TEMPLATE = """
-void state_{full_name}_entry(SM_Context* ctx) {{
-    // 1. Snapshot time
+void state_{c_name}_entry(SM_Context* ctx) {{
     ctx->state_timers[{state_id}] = ctx->now;
     {preamble}
+    {hook_entry}
     {history_save}
     {entry}
     
@@ -108,13 +103,15 @@ void state_{full_name}_entry(SM_Context* ctx) {{
     }}
 }}
 
-void state_{full_name}_exit(SM_Context* ctx) {{
+void state_{c_name}_exit(SM_Context* ctx) {{
     {preamble}
+    {hook_exit}
     {exit}
 }}
 
-void state_{full_name}_run(SM_Context* ctx) {{
+void state_{c_name}_run(SM_Context* ctx) {{
     {preamble}
+    {hook_run}
     {run}
     if (ctx->{self_ptr}) ctx->{self_ptr}(ctx);
     {transitions}
@@ -122,75 +119,113 @@ void state_{full_name}_run(SM_Context* ctx) {{
 """
 
 # ---------------------------------------------------------
-# UTILS
+# PATH & LCA LOGIC (The New Brains)
 # ---------------------------------------------------------
 
-def flatten_name(path):
+def flatten_c_name(path):
     return "_".join(path)
 
-def resolve_target(current_path, target_str):
-    if target_str.startswith("root/"):
-        parts = target_str.split("/")
-        return "state_" + "_".join(parts)
-    
-    # UPDATED: Handle '..' (Parent)
-    if target_str.startswith("../"):
-        parent = current_path[:-1] 
-        grandparent = parent[:-1]
-        target_clean = target_str.replace("../", "")
-        return "state_" + "_".join(grandparent + [target_clean])
-    
-    parent = current_path[:-1]
-    return "state_" + "_".join(parent + [target_str])
+def flatten_display_name(path):
+    if len(path) == 1: return "/"
+    return "/" + "/".join(path[1:])
 
-def resolve_target_dot(current_path, target_str):
-    # Same logic but just returns ID string for DOT
+def resolve_target_path(current_path, target_str):
+    """
+    Returns the FULL path list of the target.
+    current_path: ['root', 'active', 'motor']
+    target_str: '../idle' or 'root/idle' or 'boot'
+    """
+    # 1. Absolute Path
     if target_str.startswith("root/"):
-        return "_".join(target_str.split("/"))
+        return target_str.split("/")
+    
+    # 2. Parent Relative (../)
     if target_str.startswith("../"):
-        parent = current_path[:-1] 
-        grandparent = parent[:-1]
-        target_clean = target_str.replace("../", "")
-        return "_".join(grandparent + [target_clean])
-    parent = current_path[:-1]
-    return "_".join(parent + [target_str])
+        # ../ means "parent of the machine I am evaluated in"
+        # If I am in 'motor', I am evaluated in 'active'.
+        # So ../ means 'active's parent (root).
+        parent_scope = current_path[:-2] # Strip self and parent
+        clean_target = target_str.replace("../", "")
+        return parent_scope + [clean_target]
+    
+    # 3. Sibling (Same machine)
+    # If I am in 'motor', I am in 'active'. Target is sibling in 'active'.
+    parent_scope = current_path[:-1]
+    return parent_scope + [target_str]
+
+def get_exit_sequence(source_path, target_path):
+    """
+    Calculates which states need to be exited to go from Source to Target.
+    Returns a list of C function names: ['state_root_active_motor_exit', 'state_root_active_exit']
+    """
+    # Find LCA
+    lca_index = 0
+    min_len = min(len(source_path), len(target_path))
+    
+    while lca_index < min_len:
+        if source_path[lca_index] != target_path[lca_index]:
+            break
+        lca_index += 1
+    
+    # Everything from end of Source down to LCA (exclusive) must be exited
+    # Reverse order (innermost first)
+    exits = []
+    # We slice from the end down to lca_index
+    # e.g. Source: root, active, motor (len 3). LCA: root (index 1).
+    # We need indices 2 (motor) and 1 (active).
+    for i in range(len(source_path) - 1, lca_index - 1, -1):
+        state_segment = source_path[:i+1]
+        c_name = flatten_c_name(state_segment)
+        exits.append(f"state_{c_name}_exit")
+        
+    return exits
 
 # ---------------------------------------------------------
 # C GENERATOR
 # ---------------------------------------------------------
 
-# Global counter for State IDs
 state_counter = 0
 
-def generate_state_machine(name_path, data, parent_ptrs, output_lists):
+def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_hooks):
     global state_counter
     my_id_num = state_counter
     state_counter += 1
 
-    my_name = flatten_name(name_path)
-    my_ptr_name = f"ptr_{my_name}" 
-    my_hist_name = f"hist_{my_name}"
+    my_c_name = flatten_c_name(name_path)
+    my_disp_name = flatten_display_name(name_path)
+    
+    # Pointers
+    my_ptr_name = f"ptr_{my_c_name}" 
+    my_hist_name = f"hist_{my_c_name}"
 
     parent_run_ptr = parent_ptrs[0] if parent_ptrs else None
     parent_hist_ptr = parent_ptrs[1] if parent_ptrs else None
 
-    # Helpers for templates
-    hist_save_code = f"ctx->{parent_hist_ptr} = state_{my_name}_entry;" if parent_hist_ptr else ""
-    set_parent_code = f"ctx->{parent_run_ptr} = state_{my_name}_run;" if parent_run_ptr else ""
+    # Helpers
+    hist_save_code = f"ctx->{parent_hist_ptr} = state_{my_c_name}_entry;" if parent_hist_ptr else ""
+    set_parent_code = f"ctx->{parent_run_ptr} = state_{my_c_name}_run;" if parent_run_ptr else ""
 
-    # Generate Preamble (Vars available in all functions)
     preamble_filled = FUNC_PREAMBLE.format(
         short_name=name_path[-1],
-        full_name=my_name,
+        display_name=my_disp_name, 
         state_id=my_id_num
     )
 
-    # Transitions
+    # --- TRANSITION GENERATION (UPDATED) ---
     trans_code = ""
     for t in data.get('transitions', []):
-        target_func = resolve_target(name_path, t['transfer_to'])
+        # 1. Resolve Target Path
+        target_path_list = resolve_target_path(name_path, t['transfer_to'])
+        target_c_func = "state_" + flatten_c_name(target_path_list)
         
-        # Robust boolean handling
+        # 2. Calculate Exit Chain
+        exit_funcs = get_exit_sequence(name_path, target_path_list)
+        
+        # 3. Build Code Block
+        exit_calls = ""
+        for exit_func in exit_funcs:
+            exit_calls += f"        {exit_func}(ctx);\n"
+
         test_val = t['test']
         if test_val is True: test_cond = "true"
         elif test_val is False: test_cond = "false"
@@ -198,24 +233,31 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists):
 
         trans_code += f"""
     if ({test_cond}) {{
-        state_{my_name}_exit(ctx);
-        {target_func}_entry(ctx); 
+{exit_calls}
+        {target_c_func}_entry(ctx); 
         return; 
     }}"""
+    # ---------------------------------------
 
     is_composite = 'states' in data
+    h_entry = global_hooks.get('entry', '')
+    h_run = global_hooks.get('run', '')
+    h_exit = global_hooks.get('exit', '')
 
     if is_composite:
         output_lists['context_ptrs'].append(f"StateFunc {my_ptr_name};")
         output_lists['context_ptrs'].append(f"StateFunc {my_hist_name};")
 
-        initial_target = flatten_name(name_path + [data['initial']])
+        initial_target = flatten_c_name(name_path + [data['initial']])
         history_bool = "true" if data.get('history', False) else "false"
         
         func_body = COMPOSITE_TEMPLATE.format(
-            full_name=my_name,
+            c_name=my_c_name,
             state_id=my_id_num,
             preamble=preamble_filled,
+            hook_entry=h_entry,
+            hook_run=h_run,
+            hook_exit=h_exit,
             entry=data.get('entry', ''),
             exit=data.get('exit', ''),
             run=data.get('run', ''),
@@ -230,13 +272,16 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists):
         output_lists['functions'].append(func_body)
         
         for child_name, child_data in data['states'].items():
-            generate_state_machine(name_path + [child_name], child_data, (my_ptr_name, my_hist_name), output_lists)
+            generate_state_machine(name_path + [child_name], child_data, (my_ptr_name, my_hist_name), output_lists, global_hooks)
             
     else:
         func_body = LEAF_TEMPLATE.format(
-            full_name=my_name,
+            c_name=my_c_name,
             state_id=my_id_num,
             preamble=preamble_filled,
+            hook_entry=h_entry,
+            hook_run=h_run,
+            hook_exit=h_exit,
             entry=data.get('entry', ''),
             exit=data.get('exit', ''),
             run=data.get('run', ''),
@@ -246,15 +291,15 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists):
         )
         output_lists['functions'].append(func_body)
 
-    output_lists['forwards'].append(f"void state_{my_name}_entry(SM_Context* ctx);")
-    output_lists['forwards'].append(f"void state_{my_name}_run(SM_Context* ctx);")
-    output_lists['forwards'].append(f"void state_{my_name}_exit(SM_Context* ctx);")
+    output_lists['forwards'].append(f"void state_{my_c_name}_entry(SM_Context* ctx);")
+    output_lists['forwards'].append(f"void state_{my_c_name}_run(SM_Context* ctx);")
+    output_lists['forwards'].append(f"void state_{my_c_name}_exit(SM_Context* ctx);")
 
 # ---------------------------------------------------------
-# DOT GENERATOR
+# DOT GENERATOR (Simplified for brevity)
 # ---------------------------------------------------------
 def generate_dot_recursive(name_path, data, lines):
-    my_id = flatten_name(name_path)
+    my_id = flatten_c_name(name_path)
     is_composite = 'states' in data
     indent = "    " * len(name_path)
 
@@ -264,7 +309,7 @@ def generate_dot_recursive(name_path, data, lines):
         lines.append(f"{indent}    style=filled; color=lightgrey; node [style=filled,color=white];")
         if data.get('history', False):
              lines.append(f"{indent}    {my_id}_hist [shape=circle, label=\"H\", width=0.3];")
-        initial_child = flatten_name(name_path + [data['initial']])
+        initial_child = flatten_c_name(name_path + [data['initial']])
         lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
         lines.append(f"{indent}    {my_id}_start -> {initial_child};")
         for child_name, child_data in data['states'].items():
@@ -274,9 +319,10 @@ def generate_dot_recursive(name_path, data, lines):
         lines.append(f"{indent}{my_id} [label=\"{name_path[-1]}\", shape=box];")
 
     for t in data.get('transitions', []):
-        target_id = resolve_target_dot(name_path, t['transfer_to'])
-        # Clean label for Dot
-        label = str(t.get('test', '')).replace('"', '\\"')
+        target_path = resolve_target_path(name_path, t['transfer_to'])
+        target_id = flatten_c_name(target_path)
+        raw_test = t.get('test', '')
+        label = str(raw_test).replace('"', '\\"')
         lines.append(f"{indent}{my_id} -> {target_id} [label=\"{label}\", fontsize=10];")
 
 def generate_dot_file(root_data):
@@ -285,6 +331,9 @@ def generate_dot_file(root_data):
     lines.append("}")
     return "\n".join(lines)
 
+# ---------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------
 def main():
     if len(sys.argv) < 2:
         print("Usage: python sm-builder.py <yaml_file>")
@@ -293,7 +342,6 @@ def main():
     with open(sys.argv[1], 'r') as f:
         data = yaml.safe_load(f)
 
-    # Wrap root
     root_data = {
         'initial': data['initial'],
         'states': data['states'],
@@ -303,20 +351,19 @@ def main():
         'exit': "// Root Exit"
     }
 
-    # Generate C
+    hooks = data.get('hooks', {})
+    includes = data.get('includes', '')
+
     outputs = {'context_ptrs': [], 'functions': [], 'forwards': []}
-    generate_state_machine(['root'], root_data, None, outputs)
+    generate_state_machine(['root'], root_data, None, outputs, hooks)
     
-    # --- FIX START ---
-    # We populate all 3 placeholders (%d, %s, %s) in one go
     header = HEADER % (
         state_counter,
         data.get('context', ''), 
         "\n    ".join(outputs['context_ptrs'])
     )
-    # --- FIX END ---
 
-    source = SOURCE_TOP % ("\n".join(outputs['forwards'])) + "\n".join(outputs['functions'])
+    source = SOURCE_TOP % (includes, "\n".join(outputs['forwards'])) + "\n".join(outputs['functions'])
     source += f"""
 void sm_init(StateMachine* sm) {{
     memset(&sm->ctx, 0, sizeof(sm->ctx));
@@ -334,7 +381,6 @@ void sm_tick(StateMachine* sm) {{
     with open("statemachine.c", "w") as f:
         f.write(source)
 
-    # Generate DOT
     dot_content = generate_dot_file(root_data)
     with open("statemachine.dot", "w") as f:
         f.write(dot_content)
