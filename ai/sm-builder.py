@@ -155,7 +155,7 @@ void state_{c_name}_run(SM_Context* ctx) {{
 """
 
 # ---------------------------------------------------------
-# PATH & LCA LOGIC
+# LOGIC
 # ---------------------------------------------------------
 
 def flatten_c_name(path):
@@ -206,9 +206,7 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
     parent_run_ptr = parent_ptrs[0] if parent_ptrs else None
     parent_hist_ptr = parent_ptrs[1] if parent_ptrs else None
 
-    # 1. Generate State Check Macro
-    # If I have a parent pointer, checking if I am active means checking if 
-    # my parent points to MY run function.
+    # Macro Generation
     if parent_run_ptr:
         macro_def = f"#define IN_STATE_{my_c_name} (ctx->{parent_run_ptr} == state_{my_c_name}_run)"
         output_lists['macros'].append(macro_def)
@@ -255,7 +253,6 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
 
     if is_composite:
         if is_parallel:
-            # --- PARALLEL LOGIC ---
             p_entries = ""
             p_exits = ""
             p_ticks = ""
@@ -263,12 +260,7 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
             for child_name, child_data in data['states'].items():
                 child_path = name_path + [child_name]
                 child_c_name = flatten_c_name(child_path)
-                
-                # We calculate the pointer name that the child WILL use
                 region_ptr_name = f"ptr_{child_c_name}"
-                
-                # FIX: Do NOT append to output_lists['context_ptrs'] here.
-                # The child generation step below will see it is composite and add it.
 
                 if 'initial' not in child_data:
                     print(f"Error: Region {child_name} missing 'initial'")
@@ -287,15 +279,12 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
                 entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
                 transitions=trans_code,
                 set_parent=set_parent_code,
-                parallel_entries=p_entries,
-                parallel_exits=p_exits,
-                parallel_ticks=p_ticks,
+                parallel_entries=p_entries, parallel_exits=p_exits, parallel_ticks=p_ticks,
                 history_save=hist_save_code
             )
             output_lists['functions'].append(func_body)
 
         else:
-            # --- STANDARD OR LOGIC ---
             my_ptr_name = f"ptr_{my_c_name}" 
             my_hist_name = f"hist_{my_c_name}"
             
@@ -322,7 +311,6 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
                 generate_state_machine(name_path + [child_name], child_data, (my_ptr_name, my_hist_name), output_lists, global_hooks)
             
     else:
-        # LEAF
         func_body = LEAF_TEMPLATE.format(
             c_name=my_c_name, state_id=my_id_num, preamble=preamble_filled,
             hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
@@ -338,46 +326,123 @@ def generate_state_machine(name_path, data, parent_ptrs, output_lists, global_ho
     output_lists['forwards'].append(f"void state_{my_c_name}_exit(SM_Context* ctx);")
 
 # ---------------------------------------------------------
-# DOT GENERATOR
+# DOT GENERATOR (Corrected Cluster Support)
 # ---------------------------------------------------------
-def generate_dot_recursive(name_path, data, lines):
+
+# 1. Pre-scan for composite IDs
+def find_composites(name_path, data, result_set):
+    my_id = flatten_c_name(name_path)
+    if 'states' in data:
+        result_set.add(my_id)
+        for child_name, child_data in data['states'].items():
+            find_composites(name_path + [child_name], child_data, result_set)
+
+def generate_dot_recursive(name_path, data, lines, composite_ids):
     my_id = flatten_c_name(name_path)
     is_composite = 'states' in data
     indent = "    " * len(name_path)
 
     if is_composite:
+        # -- CLUSTER START --
         lines.append(f"{indent}subgraph cluster_{my_id} {{")
         lines.append(f"{indent}    label = \"{name_path[-1]}\";")
+        
+        # Styles
         if data.get('parallel', False):
-            lines.append(f"{indent}    style=dashed; color=black; node [style=filled,color=white];")
-            lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
-            for child_name, child_data in data['states'].items():
-                 init_leaf = flatten_c_name(name_path + [child_name] + [child_data['initial']])
-                 lines.append(f"{indent}    {my_id}_start -> {init_leaf} [style=dashed];")
+             # Parallel: Dashed
+             lines.append(f"{indent}    style=dashed; color=black; penwidth=1.5; node [style=filled, fillcolor=white];")
+             # Initial Start Dot (Connects to all parallel children)
+             lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
+             for child_name, child_data in data['states'].items():
+                 # Connect to the START NODE of the child (if child is composite) or the child itself
+                 child_full_path = name_path + [child_name]
+                 child_id = flatten_c_name(child_full_path)
+                 
+                 # Target calculation for Initial Arrow
+                 if child_id in composite_ids:
+                     tgt = f"{child_id}_start"
+                     lhead = f"lhead=cluster_{child_id}"
+                 else:
+                     tgt = child_id
+                     lhead = ""
+                 
+                 attr = f"style=dashed, {lhead}" if lhead else "style=dashed"
+                 lines.append(f"{indent}    {my_id}_start -> {tgt} [{attr}];")
+
         else:
-            lines.append(f"{indent}    style=filled; color=lightgrey; node [style=filled,color=white];")
-            if data.get('history', False):
+             # Standard: Rounded
+             lines.append(f"{indent}    style=rounded; color=black; penwidth=1.0; node [style=filled, fillcolor=white];")
+             if data.get('history', False):
                  lines.append(f"{indent}    {my_id}_hist [shape=circle, label=\"H\", width=0.3];")
-            initial_child = flatten_c_name(name_path + [data['initial']])
-            lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
-            lines.append(f"{indent}    {my_id}_start -> {initial_child};")
+             
+             # Initial Arrow
+             init_child_path = name_path + [data['initial']]
+             init_child_id = flatten_c_name(init_child_path)
+             
+             if init_child_id in composite_ids:
+                 tgt = f"{init_child_id}_start"
+                 lhead = f"lhead=cluster_{init_child_id}"
+             else:
+                 tgt = init_child_id
+                 lhead = ""
+             
+             lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
+             lines.append(f"{indent}    {my_id}_start -> {tgt} [{lhead}];")
 
+        # Recurse
         for child_name, child_data in data['states'].items():
-            generate_dot_recursive(name_path + [child_name], child_data, lines)
+            generate_dot_recursive(name_path + [child_name], child_data, lines, composite_ids)
+        
         lines.append(f"{indent}}}")
+        # -- CLUSTER END --
     else:
-        lines.append(f"{indent}{my_id} [label=\"{name_path[-1]}\", shape=box];")
+        # Leaf Node
+        lines.append(f"{indent}{my_id} [label=\"{name_path[-1]}\", shape=box, style=\"rounded,filled\", fillcolor=white];")
 
+    # Transitions
     for t in data.get('transitions', []):
         target_path = resolve_target_path(name_path, t['transfer_to'])
         target_id = flatten_c_name(target_path)
+        
+        # LOGIC FOR COMPOUND EDGES (ltail / lhead)
+        # Source:
+        # If I am composite, arrow starts from my internal _start node, but uses ltail=cluster_me
+        if is_composite:
+            src = f"{my_id}_start"
+            ltail = f"ltail=cluster_{my_id}"
+        else:
+            src = my_id
+            ltail = ""
+
+        # Target:
+        # If target is composite, arrow points to its internal _start node, but uses lhead=cluster_tgt
+        if target_id in composite_ids:
+            tgt = f"{target_id}_start"
+            lhead = f"lhead=cluster_{target_id}"
+        else:
+            tgt = target_id
+            lhead = ""
+            
+        # Combine Attributes
+        attrs = []
+        if ltail: attrs.append(ltail)
+        if lhead: attrs.append(lhead)
+        
         raw_test = t.get('test', '')
         label = str(raw_test).replace('"', '\\"')
-        lines.append(f"{indent}{my_id} -> {target_id} [label=\"{label}\", fontsize=10];")
+        attrs.append(f'label="{label}"')
+        attrs.append('fontsize=10')
+        
+        attr_str = ", ".join(attrs)
+        
+        lines.append(f"{indent}{src} -> {tgt} [{attr_str}];")
 
 def generate_dot_file(root_data):
+    composite_ids = set()
+    find_composites(['root'], root_data, composite_ids)
+
     lines = ["digraph StateMachine {", "    compound=true; fontname=\"Arial\"; node [fontname=\"Arial\"]; edge [fontname=\"Arial\"];"]
-    generate_dot_recursive(['root'], root_data, lines)
+    generate_dot_recursive(['root'], root_data, lines, composite_ids)
     lines.append("}")
     return "\n".join(lines)
 
@@ -409,13 +474,14 @@ def main():
     
     header = HEADER % (
         state_counter,
-        "\n".join(outputs['forwards']), # Forward decls
+        "\n".join(outputs['forwards']), 
         data.get('context', ''), 
         "\n    ".join(outputs['context_ptrs']),
-        "\n".join(outputs['macros'])    # Macros
+        "\n".join(outputs['macros'])    
     )
 
     source = SOURCE_TOP % (includes) + "\n".join(outputs['functions'])
+    
     source += f"""
 void sm_init(StateMachine* sm) {{
     memset(&sm->ctx, 0, sizeof(sm->ctx));
