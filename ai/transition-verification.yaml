@@ -1,0 +1,117 @@
+# Idea is to go thru different kinds of transitions.
+# * In the plane
+# * Up.
+# * Down
+# * Into a leg with history
+# * Into a paralell state
+# From a state with internal states
+
+# main should count up a counter each time it runs a tick.
+# At each new value it should compare the state_full_name with predicted.
+#
+initial: run
+
+includes: |
+  fn p( s : String) {
+    println!("{}", s);
+  }
+  
+
+# Rust-specific fields
+context: |
+    pub counter: i32,
+    pub active_flag: bool,
+
+# How to initialize the above fields in StateMachine::new()
+context_init: |
+    counter: 0,
+    active_flag: false,
+
+hooks:
+  entry: |
+    println!( "{:02}: Entry: {}", ctx.counter, state_full_name.to_string() );
+    
+  exit: |
+    println!("{:02}: Exit: {}", ctx.counter, state_full_name.to_string() );
+    
+
+  run: |
+    println!("{:02}: Running: {}", ctx.counter, state_full_name.to_string() );
+    
+
+run: |
+  //println!("{}","Runn")
+exit: |
+  //println!("{}","Exxxxit")
+entry: |
+  //println!("{}","Entrrrry")
+
+
+states:
+  done:
+    exit: |
+      p("Done".into());
+      panic!("Program finished");
+    transitions:
+      - transfer_to: done
+
+  run:
+    initial: a
+    transitions:
+      - test: ctx.counter ==8
+        transfer_to: done
+
+    states:
+      a:
+        transitions:
+          - test: ctx.counter == 1
+            transfer_to: b
+          - test: ctx.counter == 3
+            transfer_to: /run/c
+          - test: ctx.counter == 5
+            transfer_to: /run/c/d
+
+      b:
+        transitions:
+          - test: ctx.counter == 2 
+            transfer_to: a
+
+      c:
+        transitions:
+          - test: false
+            transfer_to: a
+        initial: d
+        states:
+
+          d:
+            transitions:
+              - test: ctx.counter == 4
+                transfer_to: /run
+              - test: ctx.counter == 6
+                transfer_to: /run/c/d
+              - test: ctx.counter == 7
+                transfer_to: /run/c/e
+
+          e:
+            transitions:
+              - test: false
+                transfer_to: /run/a
+            initial: f
+            states:
+
+              f:
+                transitions:
+                  - test: false
+                    transfer_to: /run/a
+
+      # paralell: true
+      # states:
+      #   p1:
+      #     states:
+      #       a:
+      #
+      #       b:
+      #
+      #   p2:
+      #     states:
+      #

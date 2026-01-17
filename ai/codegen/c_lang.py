@@ -217,11 +217,18 @@ void sm_get_state_str(StateMachine* sm, char* buffer, size_t max_len) {
                 code += self.emit_transition_logic(name_path, rule, indent_level + 1)
         else:
             target_path = resolve_target_path(name_path, target_str)
-            target_c_func = "state_" + flatten_name(target_path, "_")
+            
             exit_funcs = get_exit_sequence(name_path, target_path, lambda p: "state_" + flatten_name(p, "_") + "_exit")
             
+            # NEW: Entry Sequence
+            from .common import get_entry_sequence
+            entry_funcs = get_entry_sequence(name_path, target_path, lambda p: "state_" + flatten_name(p, "_") + "_entry")
+            
             exit_calls = "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
-            code += f"{exit_calls}{indent}    {target_c_func}_entry(ctx);\n"
+            entry_calls = "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
+            
+            code += f"{exit_calls}"
+            code += f"{entry_calls}"
             code += f"{indent}    return;\n"
 
         code += f"{indent}}}\n"

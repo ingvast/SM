@@ -6,7 +6,7 @@ HEADER = """
 #![allow(non_snake_case)]
 
 // --- User Includes / Context Types ---
- %s
+%s
 
 pub struct Context {
     pub now: f64,
@@ -217,6 +217,9 @@ class RustGenerator:
 
         return header + source, ""
 
+    def _fmt_entry(self, path):
+        return "state_" + flatten_name(path, "_") + "_entry"
+
     def emit_transition_logic(self, name_path, t, indent_level=1):
         indent = "    " * indent_level
         code = ""
@@ -241,11 +244,19 @@ class RustGenerator:
         else:
             # Transition to State
             target_path = resolve_target_path(name_path, target_str)
-            target_c_func = "state_" + flatten_name(target_path, "_")
+            
+            # 1. Calculate Exits (Bottom-Up)
             exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
             
+            # 2. Calculate Entries (Top-Down) [NEW]
+            from .common import get_entry_sequence
+            entry_funcs = get_entry_sequence(name_path, target_path, self._fmt_entry)
+            
             exit_calls = "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
-            code += f"{exit_calls}{indent}    {target_c_func}_entry(ctx);\n"
+            entry_calls = "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
+
+            code += f"{exit_calls}"
+            code += f"{entry_calls}"
             code += f"{indent}    return;\n"
 
         code += f"{indent}}}\n"

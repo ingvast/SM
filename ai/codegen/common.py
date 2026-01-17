@@ -4,56 +4,35 @@ def flatten_name(path, separator="_"):
     return separator.join(path)
 
 def resolve_target_path(current_path, target_str):
-    """
-    Resolves a target string into a list of path segments.
-    Handles:
-      - Absolute: "/root/run/c" or "root/run/c"
-      - Parent:   "../idle"
-      - Sibling:  "b"
-      - Deep:     "c/d"
-    """
-    
-    # 1. Absolute Path (Unix style: /run/c)
     if target_str.startswith("/"):
         parts = target_str.strip("/").split("/")
-        # Ensure 'root' is the start
-        if parts[0] != "root":
-            return ["root"] + parts
+        if parts[0] != "root": return ["root"] + parts
         return parts
-
-    # 2. Absolute Path (Legacy/Explicit: root/run/c)
-    if target_str.startswith("root/"):
-        return target_str.split("/")
-
-    # 3. Parent Relative (../idle)
+    if target_str.startswith("root/"): return target_str.split("/")
     if target_str.startswith("../"):
-        # Go up one level from current state's parent (i.e., go to Uncle)
-        # current: [root, run, a]
-        # parent:  [root, run]
-        # ../:     [root]
         parent_scope = current_path[:-2]
         clean_target = target_str.replace("../", "")
-        # Handle "child/grandchild" in target
         return parent_scope + clean_target.split("/")
-
-    # 4. Sibling / Down (b or c/d)
-    # Default is to start from the same container (parent)
+    
     parent_scope = current_path[:-1]
     return parent_scope + target_str.split("/")
 
-def get_exit_sequence(source_path, target_path, func_formatter):
+def get_lca_index(source_path, target_path):
     lca_index = 0
     min_len = min(len(source_path), len(target_path))
-    
     while lca_index < min_len:
         if source_path[lca_index] != target_path[lca_index]:
             break
         lca_index += 1
     
-    # Self-Transition Fix: If source == target, force exit/re-entry
+    # Self-transition fix
     if lca_index == len(source_path) and lca_index == len(target_path):
         lca_index -= 1
+        
+    return lca_index
 
+def get_exit_sequence(source_path, target_path, func_formatter):
+    lca_index = get_lca_index(source_path, target_path)
     exits = []
     # Exit from end down to (but not including) the LCA
     for i in range(len(source_path) - 1, lca_index - 1, -1):
@@ -62,9 +41,20 @@ def get_exit_sequence(source_path, target_path, func_formatter):
         exits.append(func_name)
     return exits
 
-# --- VISUALIZATION ---
-# (No changes needed below this line, same as previous version)
+# --- NEW FUNCTION ---
+def get_entry_sequence(source_path, target_path, func_formatter):
+    lca_index = get_lca_index(source_path, target_path)
+    entries = []
+    # Enter from LCA child up to Target
+    # lca_index is the first diverging index. 
+    # Example: A/B/C -> A/B/X/Y. LCA=A/B (index 2). We need X (2) and Y (3).
+    for i in range(lca_index, len(target_path)):
+        state_segment = target_path[:i+1]
+        func_name = func_formatter(state_segment)
+        entries.append(func_name)
+    return entries
 
+# --- VISUALIZATION (No changes) ---
 def find_composites(name_path, data, result_set):
     my_id = flatten_name(name_path)
     if 'states' in data:
@@ -136,15 +126,12 @@ def generate_dot(root_data, decisions):
     find_composites(['root'], root_data, composite_ids)
     
     lines = ["digraph StateMachine {", "    compound=true; fontname=\"Arial\"; node [fontname=\"Arial\"]; edge [fontname=\"Arial\"];"]
-    
     generate_dot_recursive(['root'], root_data, lines, composite_ids, decisions)
     
     for name, transitions in decisions.items():
         lines.append(f"    {name} [label=\"?\", shape=diamond, style=filled, fillcolor=lightyellow];")
         for t in transitions:
             raw_tgt = t['transfer_to']
-            # Re-use resolve_target_path for visual accuracy? 
-            # For decisions we often just want a rough arrow.
             if raw_tgt.startswith("/"): tgt_id = flatten_name(raw_tgt.strip("/").split("/"))
             elif raw_tgt.startswith("../"): tgt_id = raw_tgt.replace("../", "")
             elif raw_tgt.startswith("root/"): tgt_id = flatten_name(raw_tgt.split("/"))
