@@ -41,18 +41,24 @@ def get_exit_sequence(source_path, target_path, func_formatter):
         exits.append(func_name)
     return exits
 
-# --- NEW FUNCTION ---
 def get_entry_sequence(source_path, target_path, func_formatter):
     lca_index = get_lca_index(source_path, target_path)
+    
+    # If lca_index == len(target_path), it means the Target IS the LCA.
+    # (i.e., we are transitioning UP to a container we are already in).
+    # We must decrement the index to ensure we call the Target's entry function.
+    # This resets the Parent to its 'initial' state.
+    if lca_index == len(target_path):
+        lca_index -= 1
+
     entries = []
     # Enter from LCA child up to Target
-    # lca_index is the first diverging index. 
-    # Example: A/B/C -> A/B/X/Y. LCA=A/B (index 2). We need X (2) and Y (3).
     for i in range(lca_index, len(target_path)):
         state_segment = target_path[:i+1]
         func_name = func_formatter(state_segment)
         entries.append(func_name)
     return entries
+
 
 # --- VISUALIZATION (No changes) ---
 def find_composites(name_path, data, result_set):
