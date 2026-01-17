@@ -1,16 +1,12 @@
 from .common import flatten_name, resolve_target_path, get_exit_sequence
 
-# ---------------------------------------------------------
-# RUST TEMPLATES
-# ---------------------------------------------------------
-
 HEADER = """
 #![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(non_snake_case)]
 
 // --- User Includes / Context Types ---
-// %s
+ %s
 
 pub struct Context {
     pub now: f64,
@@ -33,12 +29,11 @@ pub struct StateMachine {
 
 impl StateMachine {
     pub fn new() -> Self {
-        // Initialize Context
         let mut ctx = Context {
             now: 0.0,
             state_timers: [0.0; %d],
             
-            // Init Hierarchy Pointers to None
+            // Init Hierarchy Pointers
             %s
             
             // Init User Context
@@ -85,6 +80,7 @@ FUNC_PREAMBLE = """
     let time = ctx.now - ctx.state_timers[{state_id}];
 """
 
+# SAFETY UPDATE: Entry does NOT call Run.
 LEAF_TEMPLATE = """
 fn state_{c_name}_entry(ctx: &mut Context) {{
     ctx.state_timers[{state_id}] = ctx.now;
@@ -93,7 +89,6 @@ fn state_{c_name}_entry(ctx: &mut Context) {{
     {history_save}
     {entry}
     ctx.{parent_ptr} = Some(state_{c_name}_run);
-    state_{c_name}_run(ctx);
 }}
 
 fn state_{c_name}_exit(ctx: &mut Context) {{
@@ -188,8 +183,9 @@ class RustGenerator:
         self.state_counter = 0
         self.outputs = {'context_ptrs': [], 'context_init': [], 'functions': [], 'impls': []}
         self.inspect_list = []
+        self.decisions = data.get('decisions', {})
         self.hooks = data.get('hooks', {})
-        self.includes = data.get('includes', '') 
+        self.includes = data.get('includes', '')
 
     def _fmt_func(self, path):
         return "state_" + flatten_name(path, "_") + "_exit"
@@ -204,23 +200,56 @@ class RustGenerator:
         self.gen_inspector(['root'], root_data, 'root')
 
         user_init = self.data.get('context_init', '')
-        # We KEEP user_init separate now to match the HEADER template
 
         header = HEADER % (
-            "",                                      # 1. Includes
-            self.state_counter,                      # 2. Timer Array Size
-            "\n    ".join(self.outputs['context_ptrs']), # 3. Struct Pointers
-            self.data.get('context', ''),            # 4. Struct User Context
-            self.state_counter,                      # 5. Init Array Size
-            "\n            ".join(self.outputs['context_init']), # 6. Init Pointers
-            user_init,                               # 7. Init User Context
-            "\n    ".join(self.outputs['impls'])     # 8. Helper Methods
+            self.includes, 
+            self.state_counter,
+            "\n    ".join(self.outputs['context_ptrs']),
+            self.data.get('context', ''), 
+            self.state_counter,
+            "\n            ".join(self.outputs['context_init']),
+            user_init,
+            "\n    ".join(self.outputs['impls'])
         )
         
         source = "\n".join(self.outputs['functions'])
         source += "\n// --- Inspection ---\n" + "\n".join(self.inspect_list)
 
         return header + source, ""
+
+    def emit_transition_logic(self, name_path, t, indent_level=1):
+        indent = "    " * indent_level
+        code = ""
+        target_str = t['transfer_to']
+        
+        test_val = t.get('test', True)
+        if test_val is True: test_cond = "true"
+        elif test_val is False: test_cond = "false"
+        else: test_cond = str(test_val)
+        
+        import re
+        test_cond = re.sub(r'IN_STATE\(([\w_]+)\)', r'ctx.in_state_\1()', test_cond)
+
+        code += f"{indent}if {test_cond} {{\n"
+
+        # Check for Decision or State
+        if target_str in self.decisions:
+            # Inline Decision Logic (Recursive)
+            decision_rules = self.decisions[target_str]
+            for rule in decision_rules:
+                code += self.emit_transition_logic(name_path, rule, indent_level + 1)
+        else:
+            # Transition to State
+            target_path = resolve_target_path(name_path, target_str)
+            target_c_func = "state_" + flatten_name(target_path, "_")
+            exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
+            
+            exit_calls = "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
+            code += f"{exit_calls}{indent}    {target_c_func}_entry(ctx);\n"
+            code += f"{indent}    return;\n"
+
+        code += f"{indent}}}\n"
+        return code
 
     def recurse(self, name_path, data, parent_ptrs):
         my_id_num = self.state_counter
@@ -233,7 +262,7 @@ class RustGenerator:
         parent_run_ptr = parent_ptrs[0] if parent_ptrs else None
         parent_hist_ptr = parent_ptrs[1] if parent_ptrs else None
 
-        # Cast function pointers to usize for safe comparison
+        # Helper method for In-State check
         if parent_run_ptr:
             method = f"""
     pub fn in_state_{my_c_name}(&self) -> bool {{
@@ -246,25 +275,7 @@ class RustGenerator:
 
         trans_code = ""
         for t in data.get('transitions', []):
-            target_path = resolve_target_path(name_path, t['transfer_to'])
-            target_c_func = "state_" + flatten_name(target_path, "_")
-            exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
-            exit_calls = "".join([f"        {fn}(ctx);\n" for fn in exit_funcs])
-            
-            test_val = t['test']
-            if test_val is True: test_cond = "true"
-            elif test_val is False: test_cond = "false"
-            else: test_cond = str(test_val)
-            
-            import re
-            test_cond = re.sub(r'IN_STATE\(([\w_]+)\)', r'ctx.in_state_\1()', test_cond)
-
-            trans_code += f"""
-    if {test_cond} {{
-{exit_calls}
-        {target_c_func}_entry(ctx); 
-        return; 
-    }}"""
+            trans_code += self.emit_transition_logic(name_path, t, 2)
 
         is_composite = 'states' in data
         is_parallel = data.get('parallel', False)
@@ -279,8 +290,6 @@ class RustGenerator:
                 for child_name, child_data in data['states'].items():
                     child_path = name_path + [child_name]
                     region_ptr = f"ptr_{flatten_name(child_path, '_')}"
-                    
-                    # We do NOT add pointers here (fixed prev issue)
                     
                     init_leaf = flatten_name(child_path + [child_data['initial']], "_")
                     p_entries += f"    state_{init_leaf}_entry(ctx);\n"
@@ -361,8 +370,8 @@ class RustGenerator:
                 for child_name, child_data in data['states'].items():
                     c_name = flatten_name(name_path + [child_name], "_")
                     else_txt = "else " if not first else ""
-                    # Cast to usize for safe comparison
                     content += f"    {else_txt}if ctx.{my_ptr}.map(|f| f as usize) == Some(state_{c_name}_run as usize) {{ inspect_{c_name}(ctx, buf); }}\n"
                     first = False
 
         self.inspect_list.append(INSPECTOR_TEMPLATE.format(c_name=my_c_name, push_name=push_name, content=content))
+

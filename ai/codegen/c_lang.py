@@ -1,10 +1,7 @@
 from .common import flatten_name, resolve_target_path, get_exit_sequence
 
-# ... (Insert all your C templates here: HEADER, SOURCE_TOP, LEAF_TEMPLATE, etc.) ...
-# For brevity in this response, I assume you copy the strings from the previous script.
-# Make sure to update flatten_name calls to use the imported one.
-
-HEADER = """#ifndef STATEMACHINE_H
+HEADER = """
+#ifndef STATEMACHINE_H
 #define STATEMACHINE_H
 #include <stdio.h>
 #include <stdbool.h>
@@ -46,7 +43,8 @@ void sm_get_state_str(StateMachine* sm, char* buffer, size_t max_len);
 #endif
 """
 
-SOURCE_TOP = """#include "statemachine.h"
+SOURCE_TOP = """
+#include "statemachine.h"
 
 // --- User Includes ---
 %s
@@ -54,7 +52,7 @@ SOURCE_TOP = """#include "statemachine.h"
 // --- Helpers ---
 static void safe_strcat(char* dest, const char* src, size_t* offset, size_t max) {
     size_t len = strlen(src);
-    if (*offset + len >= max) return; // Truncate safely
+    if (*offset + len >= max) return;
     strcpy(dest + *offset, src);
     *offset += len;
 }
@@ -62,7 +60,8 @@ static void safe_strcat(char* dest, const char* src, size_t* offset, size_t max)
 // --- State Logic ---
 """
 
-FUNC_PREAMBLE = """    (void)ctx;
+FUNC_PREAMBLE = """
+    (void)ctx;
     const char* state_name = "{short_name}";
     const char* state_full_name = "{display_name}";
     (void)state_name; (void)state_full_name;
@@ -70,20 +69,22 @@ FUNC_PREAMBLE = """    (void)ctx;
     (void)time; 
 """
 
-LEAF_TEMPLATE = """void state_{c_name}_entry(SM_Context* ctx) {{
+LEAF_TEMPLATE = """
+void state_{c_name}_entry(SM_Context* ctx) {{
     ctx->state_timers[{state_id}] = ctx->now;
     {preamble}
     {hook_entry}
     {history_save}
     {entry}
     ctx->{parent_ptr} = state_{c_name}_run;
-    state_{c_name}_run(ctx);
 }}
+
 void state_{c_name}_exit(SM_Context* ctx) {{
     {preamble}
     {hook_exit}
     {exit}
 }}
+
 void state_{c_name}_run(SM_Context* ctx) {{
     {preamble}
     {hook_run}
@@ -92,24 +93,28 @@ void state_{c_name}_run(SM_Context* ctx) {{
 }}
 """
 
-COMPOSITE_OR_TEMPLATE = """void state_{c_name}_entry(SM_Context* ctx) {{
+COMPOSITE_OR_TEMPLATE = """
+void state_{c_name}_entry(SM_Context* ctx) {{
     ctx->state_timers[{state_id}] = ctx->now;
     {preamble}
     {hook_entry}
     {history_save}
     {entry}
     {set_parent}
+    
     if (({history}) && ctx->{self_hist_ptr} != NULL) {{
         ctx->{self_hist_ptr}(ctx);
     }} else {{
         state_{initial_target}_entry(ctx);
     }}
 }}
+
 void state_{c_name}_exit(SM_Context* ctx) {{
     {preamble}
     {hook_exit}
     {exit}
 }}
+
 void state_{c_name}_run(SM_Context* ctx) {{
     {preamble}
     {hook_run}
@@ -119,28 +124,28 @@ void state_{c_name}_run(SM_Context* ctx) {{
 }}
 """
 
-COMPOSITE_AND_TEMPLATE = """void state_{c_name}_entry(SM_Context* ctx) {{
+COMPOSITE_AND_TEMPLATE = """
+void state_{c_name}_entry(SM_Context* ctx) {{
     ctx->state_timers[{state_id}] = ctx->now;
     {preamble}
     {hook_entry}
     {history_save}
     {entry}
     {set_parent}
-    // Parallel Entry
     {parallel_entries}
 }}
+
 void state_{c_name}_exit(SM_Context* ctx) {{
     {preamble}
     {hook_exit}
-    // Parallel Exit
     {parallel_exits}
     {exit}
 }}
+
 void state_{c_name}_run(SM_Context* ctx) {{
     {preamble}
     {hook_run}
     {run}
-    // Parallel Run
     {parallel_ticks}
     {transitions}
 }}
@@ -152,11 +157,9 @@ class CGenerator:
         self.state_counter = 0
         self.outputs = {'context_ptrs': [], 'functions': [], 'forwards': [], 'macros': []}
         self.inspect_list = []
+        self.decisions = data.get('decisions', {})
         self.hooks = data.get('hooks', {})
         self.includes = data.get('includes', '')
-
-    def _fmt_func(self, path):
-        return "state_" + flatten_name(path, "_") + "_exit"
 
     def generate(self):
         root_data = {
@@ -176,9 +179,8 @@ class CGenerator:
         )
 
         source = SOURCE_TOP % (self.includes) + "\n".join(self.outputs['functions'])
-        source += "\n// --- Inspection Logic ---\n" + "\n".join(self.inspect_list)
+        source += "\n// --- Inspection ---\n" + "\n".join(self.inspect_list)
         
-        # Add Init/Tick glue code
         source += """
 void sm_init(StateMachine* sm) {
     memset(&sm->ctx, 0, sizeof(sm->ctx));
@@ -197,12 +199,39 @@ void sm_get_state_str(StateMachine* sm, char* buffer, size_t max_len) {
 """
         return header, source
 
+    def emit_transition_logic(self, name_path, t, indent_level=1):
+        indent = "    " * indent_level
+        code = ""
+        target_str = t['transfer_to']
+        
+        test_val = t.get('test', True)
+        if test_val is True: test_cond = "true"
+        elif test_val is False: test_cond = "false"
+        else: test_cond = str(test_val)
+        
+        code += f"{indent}if ({test_cond}) {{\n"
+
+        if target_str in self.decisions:
+            decision_rules = self.decisions[target_str]
+            for rule in decision_rules:
+                code += self.emit_transition_logic(name_path, rule, indent_level + 1)
+        else:
+            target_path = resolve_target_path(name_path, target_str)
+            target_c_func = "state_" + flatten_name(target_path, "_")
+            exit_funcs = get_exit_sequence(name_path, target_path, lambda p: "state_" + flatten_name(p, "_") + "_exit")
+            
+            exit_calls = "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
+            code += f"{exit_calls}{indent}    {target_c_func}_entry(ctx);\n"
+            code += f"{indent}    return;\n"
+
+        code += f"{indent}}}\n"
+        return code
+
     def recurse(self, name_path, data, parent_ptrs):
         my_id_num = self.state_counter
         self.state_counter += 1
         my_c_name = flatten_name(name_path, "_")
         
-        # Preamble setup (Display Name)
         disp_name = "/" + "/".join(name_path[1:]) if len(name_path) > 1 else "/"
         preamble = FUNC_PREAMBLE.format(short_name=name_path[-1], display_name=disp_name, state_id=my_id_num)
 
@@ -215,27 +244,13 @@ void sm_get_state_str(StateMachine* sm, char* buffer, size_t max_len) {
         hist_save_code = f"ctx->{parent_hist_ptr} = state_{my_c_name}_entry;" if parent_hist_ptr else ""
         set_parent_code = f"ctx->{parent_run_ptr} = state_{my_c_name}_run;" if parent_run_ptr else ""
 
-        # Transitions
         trans_code = ""
         for t in data.get('transitions', []):
-            target_path = resolve_target_path(name_path, t['transfer_to'])
-            target_c_func = "state_" + flatten_name(target_path, "_")
-            exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
-            exit_calls = "".join([f"        {fn}(ctx);\n" for fn in exit_funcs])
-            
-            test_val = t['test']
-            if test_val is True: test_cond = "true"
-            elif test_val is False: test_cond = "false"
-            else: test_cond = str(test_val)
-
-            trans_code += f"""    if ({test_cond}) {{
-{exit_calls}        {target_c_func}_entry(ctx); return; 
-    }}"""
+            trans_code += self.emit_transition_logic(name_path, t, 1)
 
         is_composite = 'states' in data
         is_parallel = data.get('parallel', False)
         
-        # Hooks
         h_entry = self.hooks.get('entry', '')
         h_run = self.hooks.get('run', '')
         h_exit = self.hooks.get('exit', '')
