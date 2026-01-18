@@ -1,4 +1,5 @@
-from .common import flatten_name, resolve_target_path, get_exit_sequence
+from .common import flatten_name, resolve_target_path, get_exit_sequence, get_entry_sequence
+import sys
 
 HEADER = """
 #![allow(unused_variables)]
@@ -29,7 +30,8 @@ pub struct StateMachine {
 
 impl StateMachine {
     pub fn new() -> Self {
-        let mut ctx = Context {
+        // FIX: 'mut' removed here to silence warning
+        let ctx = Context {
             now: 0.0,
             state_timers: [0.0; %d],
             
@@ -80,33 +82,30 @@ FUNC_PREAMBLE = """
     let time = ctx.now - ctx.state_timers[{state_id}];
 """
 
-# In codegen/rust_lang.py
-
 LEAF_TEMPLATE = """
 fn state_{c_name}_start(ctx: &mut Context) {{
     ctx.state_timers[{state_id}] = ctx.now;
     {preamble}
     {hook_entry}
-    // Set pointer, but NO run call
-    ctx.{parent_ptr} = Some(state_{c_name}_run);
+    {set_parent}
 }}
 
 fn state_{c_name}_entry(ctx: &mut Context) {{
     state_{c_name}_start(ctx);
-    // Leaf has no children to enter
 }}
 
 fn state_{c_name}_exit(ctx: &mut Context) {{
     {preamble}
     {hook_exit}
     {exit}
+    {clear_parent}
 }}
 
 fn state_{c_name}_run(ctx: &mut Context) {{
     {preamble}
     {hook_run}
-    {run}
     {transitions}
+    {run}
 }}
 """
 
@@ -120,8 +119,6 @@ fn state_{c_name}_start(ctx: &mut Context) {{
 
 fn state_{c_name}_entry(ctx: &mut Context) {{
     state_{c_name}_start(ctx);
-    
-    // Recurse to child
     if ({history}) && ctx.{self_hist_ptr}.is_some() {{
         let hist_fn = ctx.{self_hist_ptr}.unwrap();
         hist_fn(ctx);
@@ -132,18 +129,26 @@ fn state_{c_name}_entry(ctx: &mut Context) {{
 
 fn state_{c_name}_exit(ctx: &mut Context) {{
     {preamble}
+    // RECURSIVE EXIT: Kill active child first
+    if let Some(child_exit) = ctx.{self_exit_ptr} {{
+        child_exit(ctx);
+    }}
+
     {hook_exit}
     {exit}
+    {clear_parent}
 }}
 
 fn state_{c_name}_run(ctx: &mut Context) {{
     {preamble}
     {hook_run}
+    {transitions}
     {run}
+    
+    // Tick active child
     if let Some(child_run) = ctx.{self_ptr} {{
         child_run(ctx);
     }}
-    {transitions}
 }}
 """
 
@@ -157,26 +162,27 @@ fn state_{c_name}_start(ctx: &mut Context) {{
 
 fn state_{c_name}_entry(ctx: &mut Context) {{
     state_{c_name}_start(ctx);
-    // Start all parallel regions
     {parallel_entries}
 }}
 
 fn state_{c_name}_exit(ctx: &mut Context) {{
     {preamble}
-    {hook_exit}
+    // RECURSIVE EXIT
     {parallel_exits}
+    
+    {hook_exit}
     {exit}
+    {clear_parent}
 }}
 
 fn state_{c_name}_run(ctx: &mut Context) {{
     {preamble}
     {hook_run}
+    {transitions}
     {run}
     {parallel_ticks}
-    {transitions}
 }}
 """
-
 
 INSPECTOR_TEMPLATE = """
 fn inspect_{c_name}(ctx: &Context, buf: &mut String) {{
@@ -197,6 +203,9 @@ class RustGenerator:
 
     def _fmt_func(self, path):
         return "state_" + flatten_name(path, "_") + "_exit"
+        
+    def _fmt_entry(self, path, suffix="_entry"):
+        return "state_" + flatten_name(path, "_") + suffix
 
     def generate(self):
         root_data = {
@@ -209,6 +218,7 @@ class RustGenerator:
 
         user_init = self.data.get('context_init', '')
 
+        # FIX: Pass 'self.includes' (User Includes) to the first placeholder
         header = HEADER % (
             self.includes, 
             self.state_counter,
@@ -225,9 +235,6 @@ class RustGenerator:
 
         return header + source, ""
 
-    def _fmt_entry(self, path, suffix="_entry"):
-        return "state_" + flatten_name(path, "_") + suffix
-
     def emit_transition_logic(self, name_path, t, indent_level=1):
         indent = "    " * indent_level
         code = ""
@@ -243,21 +250,14 @@ class RustGenerator:
 
         code += f"{indent}if {test_cond} {{\n"
 
-        # Check for Decision or State
         if target_str in self.decisions:
-            # Inline Decision Logic (Recursive)
             decision_rules = self.decisions[target_str]
             for rule in decision_rules:
                 code += self.emit_transition_logic(name_path, rule, indent_level + 1)
         else:
-            # Transition to State
             target_path = resolve_target_path(name_path, target_str)
             
-            # 1. Calculate Exits (Bottom-Up)
             exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
-            
-            # 2. Calculate Entries (Top-Down) [NEW]
-            from .common import get_entry_sequence
             entry_funcs = get_entry_sequence(name_path, target_path, self._fmt_entry)
             
             exit_calls = "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
@@ -271,94 +271,119 @@ class RustGenerator:
         return code
 
     def recurse(self, name_path, data, parent_ptrs):
-        my_id_num = self.state_counter
-        self.state_counter += 1
-        my_c_name = flatten_name(name_path, "_")
-        
-        disp_name = "/" + "/".join(name_path[1:]) if len(name_path) > 1 else "/"
-        preamble = FUNC_PREAMBLE.format(short_name=name_path[-1], display_name=disp_name, state_id=my_id_num)
+        try:
+            my_id_num = self.state_counter
+            self.state_counter += 1
+            my_c_name = flatten_name(name_path, "_")
+            
+            disp_name = "/" + "/".join(name_path[1:]) if len(name_path) > 1 else "/"
+            preamble = FUNC_PREAMBLE.format(short_name=name_path[-1], display_name=disp_name, state_id=my_id_num)
 
-        parent_run_ptr = parent_ptrs[0] if parent_ptrs else None
-        parent_hist_ptr = parent_ptrs[1] if parent_ptrs else None
+            parent_run_ptr = parent_ptrs[0] if parent_ptrs else None
+            parent_exit_ptr = parent_ptrs[1] if parent_ptrs else None
+            parent_hist_ptr = parent_ptrs[2] if parent_ptrs else None
 
-        # Helper method for In-State check
-        if parent_run_ptr:
-            method = f"""
-    pub fn in_state_{my_c_name}(&self) -> bool {{
-        self.{parent_run_ptr}.map(|f| f as usize) == Some(state_{my_c_name}_run as usize)
-    }}"""
-            self.outputs['impls'].append(method)
+            if parent_run_ptr:
+                method = f"""
+        pub fn in_state_{my_c_name}(&self) -> bool {{
+            self.{parent_run_ptr}.map(|f| f as usize) == Some(state_{my_c_name}_run as usize)
+        }}"""
+                self.outputs['impls'].append(method)
 
-        hist_save_code = f"ctx.{parent_hist_ptr} = Some(state_{my_c_name}_entry);" if parent_hist_ptr else ""
-        set_parent_code = f"ctx.{parent_run_ptr} = Some(state_{my_c_name}_run);" if parent_run_ptr else ""
+            # Generate "Set Parent" AND "Clear Parent" blocks dynamically
+            set_parent_code = ""
+            clear_parent_code = ""
+            
+            if parent_run_ptr:
+                set_parent_code += f"ctx.{parent_run_ptr} = Some(state_{my_c_name}_run);\n    "
+                set_parent_code += f"ctx.{parent_exit_ptr} = Some(state_{my_c_name}_exit);"
+                
+                clear_parent_code += f"ctx.{parent_run_ptr} = None;\n    "
+                clear_parent_code += f"ctx.{parent_exit_ptr} = None;"
+                
+            trans_code = ""
+            for i, t in enumerate(data.get('transitions', [])):
+                try:
+                    trans_code += self.emit_transition_logic(name_path, t, 1)
+                except Exception as e:
+                    raise Exception(f"Transition #{i+1} logic error: {e}")
 
-        trans_code = ""
-        for t in data.get('transitions', []):
-            trans_code += self.emit_transition_logic(name_path, t, 2)
+            is_composite = 'states' in data
+            is_parallel = data.get('parallel', False)
+            
+            h_entry = self.hooks.get('entry', '')
+            h_run = self.hooks.get('run', '')
+            h_exit = self.hooks.get('exit', '')
 
-        is_composite = 'states' in data
-        is_parallel = data.get('parallel', False)
-        
-        h_entry = self.hooks.get('entry', '')
-        h_run = self.hooks.get('run', '')
-        h_exit = self.hooks.get('exit', '')
+            if is_composite:
+                if is_parallel:
+                    p_entries, p_exits, p_ticks = "", "", ""
+                    for child_name, child_data in data['states'].items():
+                        child_path = name_path + [child_name]
+                        region_ptr = f"ptr_{flatten_name(child_path, '_')}"
+                        region_exit_ptr = f"{region_ptr}_exit"
+                        
+                        self.outputs['context_ptrs'].append(f"pub {region_ptr}: Option<StateFn>,")
+                        self.outputs['context_ptrs'].append(f"pub {region_exit_ptr}: Option<StateFn>,")
+                        self.outputs['context_init'].append(f"{region_ptr}: None,")
+                        self.outputs['context_init'].append(f"{region_exit_ptr}: None,")
 
-        if is_composite:
-            if is_parallel:
-                p_entries, p_exits, p_ticks = "", "", ""
-                for child_name, child_data in data['states'].items():
-                    child_path = name_path + [child_name]
-                    region_ptr = f"ptr_{flatten_name(child_path, '_')}"
+                        init_leaf = flatten_name(child_path + [child_data['initial']], "_")
+                        p_entries += f"    state_{init_leaf}_entry(ctx);\n"
+                        p_exits += f"    if let Some(f) = ctx.{region_exit_ptr} {{ f(ctx); }}\n"
+                        p_ticks += f"    if let Some(f) = ctx.{region_ptr} {{ f(ctx); }}\n"
+                        
+                        self.recurse(child_path, child_data, (region_ptr, region_exit_ptr, None))
+
+                    func_body = COMPOSITE_AND_TEMPLATE.format(
+                        c_name=my_c_name, state_id=my_id_num, preamble=preamble,
+                        hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
+                        entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
+                        transitions=trans_code, 
+                        set_parent=set_parent_code, clear_parent=clear_parent_code,
+                        parallel_entries=p_entries, parallel_exits=p_exits, parallel_ticks=p_ticks
+                    )
+                else:
+                    my_ptr = f"ptr_{my_c_name}"
+                    my_exit_ptr = f"{my_ptr}_exit"
+                    my_hist = f"hist_{my_c_name}"
                     
-                    init_leaf = flatten_name(child_path + [child_data['initial']], "_")
-                    p_entries += f"    state_{init_leaf}_entry(ctx);\n"
-                    p_ticks += f"    if let Some(f) = ctx.{region_ptr} {{ f(ctx); }}\n"
-                    p_exits += f"    // Implicit exit {child_name}\n"
+                    self.outputs['context_ptrs'].append(f"pub {my_ptr}: Option<StateFn>,")
+                    self.outputs['context_ptrs'].append(f"pub {my_exit_ptr}: Option<StateFn>,")
+                    self.outputs['context_ptrs'].append(f"pub {my_hist}: Option<StateFn>,")
                     
-                    self.recurse(child_path, child_data, (region_ptr, None))
+                    self.outputs['context_init'].append(f"{my_ptr}: None,")
+                    self.outputs['context_init'].append(f"{my_exit_ptr}: None,")
+                    self.outputs['context_init'].append(f"{my_hist}: None,")
+                    
+                    init_target = flatten_name(name_path + [data['initial']], "_")
+                    hist_bool = "true" if data.get('history', False) else "false"
 
-                func_body = COMPOSITE_AND_TEMPLATE.format(
-                    c_name=my_c_name, state_id=my_id_num, preamble=preamble,
-                    hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
-                    entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
-                    transitions=trans_code, set_parent=set_parent_code,
-                    parallel_entries=p_entries, parallel_exits=p_exits, parallel_ticks=p_ticks,
-                    history_save=hist_save_code
-                )
+                    func_body = COMPOSITE_OR_TEMPLATE.format(
+                        c_name=my_c_name, state_id=my_id_num, preamble=preamble,
+                        hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
+                        entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
+                        transitions=trans_code, history=hist_bool,
+                        self_ptr=my_ptr, self_exit_ptr=my_exit_ptr, self_hist_ptr=my_hist,
+                        initial_target=init_target, 
+                        set_parent=set_parent_code, clear_parent=clear_parent_code
+                    )
+                    
+                    for child_name, child_data in data['states'].items():
+                        self.recurse(name_path + [child_name], child_data, (my_ptr, my_exit_ptr, my_hist))
             else:
-                my_ptr = f"ptr_{my_c_name}"
-                my_hist = f"hist_{my_c_name}"
-                
-                self.outputs['context_ptrs'].append(f"pub {my_ptr}: Option<StateFn>,")
-                self.outputs['context_ptrs'].append(f"pub {my_hist}: Option<StateFn>,")
-                self.outputs['context_init'].append(f"{my_ptr}: None,")
-                self.outputs['context_init'].append(f"{my_hist}: None,")
-                
-                init_target = flatten_name(name_path + [data['initial']], "_")
-                hist_bool = "true" if data.get('history', False) else "false"
-
-                func_body = COMPOSITE_OR_TEMPLATE.format(
+                func_body = LEAF_TEMPLATE.format(
                     c_name=my_c_name, state_id=my_id_num, preamble=preamble,
                     hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
                     entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
-                    transitions=trans_code, history=hist_bool,
-                    self_ptr=my_ptr, self_hist_ptr=my_hist,
-                    initial_target=init_target, history_save=hist_save_code,
-                    set_parent=set_parent_code
+                    transitions=trans_code, 
+                    set_parent=set_parent_code, clear_parent=clear_parent_code
                 )
-                
-                for child_name, child_data in data['states'].items():
-                    self.recurse(name_path + [child_name], child_data, (my_ptr, my_hist))
-        else:
-            func_body = LEAF_TEMPLATE.format(
-                c_name=my_c_name, state_id=my_id_num, preamble=preamble,
-                hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
-                entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
-                transitions=trans_code, history_save=hist_save_code,
-                parent_ptr=parent_run_ptr
-            )
 
-        self.outputs['functions'].append(func_body)
+            self.outputs['functions'].append(func_body)
+        
+        except Exception as e:
+            raise Exception(f"Error generating state '{'/'.join(name_path)}': {str(e)}")
 
     def gen_inspector(self, name_path, data, ptr_name_struct):
         my_c_name = flatten_name(name_path, "_")
@@ -393,4 +418,3 @@ class RustGenerator:
                     first = False
 
         self.inspect_list.append(INSPECTOR_TEMPLATE.format(c_name=my_c_name, push_name=push_name, content=content))
-

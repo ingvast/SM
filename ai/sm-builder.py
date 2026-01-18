@@ -6,47 +6,149 @@ import os
 # Ensure we can import from local directory
 sys.path.append(os.getcwd())
 
-from codegen.common import generate_dot
-from codegen.c_lang import CGenerator
+from codegen.common import generate_dot, resolve_target_path, flatten_name
 from codegen.rust_lang import RustGenerator
+
+class BuildError(Exception):
+    pass
+
+def get_state_data(root_data, path_parts):
+    """
+    Navigates the data dictionary to find the state object at path_parts.
+    Returns None if not found.
+    path_parts example: ['root', 'run', 'c']
+    """
+    current = root_data
+    # Skip 'root' if it's the first element, as root_data IS the root object
+    start_idx = 1 if (path_parts and path_parts[0] == 'root') else 0
+    
+    for part in path_parts[start_idx:]:
+        if 'states' not in current:
+            return None
+        if part not in current['states']:
+            return None
+        current = current['states'][part]
+    return current
+
+def validate_model(data):
+    """
+    Performs a pre-flight check on the model to catch common errors.
+    """
+    print("Validating model...")
+    errors = []
+    
+    # 1. Recursive check for states
+    def check_state(name_path, state_data):
+        display_name = "/" + "/".join(name_path[1:])
+        
+        # Check Composite Validity
+        if 'states' in state_data:
+            # Must have 'initial'
+            if 'initial' not in state_data and not state_data.get('parallel', False):
+                errors.append(f"State '{display_name}' is composite but missing 'initial' property.")
+            elif 'initial' in state_data:
+                init = state_data['initial']
+                if init not in state_data['states']:
+                    errors.append(f"State '{display_name}' defines initial='{init}', but that child does not exist.")
+
+        # Check Transitions
+        transitions = state_data.get('transitions', [])
+        for i, t in enumerate(transitions):
+            if 'transfer_to' not in t:
+                errors.append(f"State '{display_name}', transition #{i+1}: Missing 'transfer_to'.")
+                continue
+            
+            target = t['transfer_to']
+            # We don't validate targets pointing to Decisions yet (complex), 
+            # but we can validate State targets.
+            if target in data.get('decisions', {}):
+                continue
+
+            target_path = resolve_target_path(name_path, target)
+            print(f"DEBUG: Resolving '{target}' from '{name_path}' -> Looking for: {target_path}") 
+            target_obj = get_state_data(data, target_path)
+            
+            if target_obj is None:
+                # Try to see if it points to a parallel sibling (which is valid but tricky)
+                # For now, strict check:
+                errors.append(f"State '{display_name}', transition #{i+1}: Target '{target}' (resolved: {'/'.join(target_path)}) does not exist.")
+
+        # Recurse
+        if 'states' in state_data:
+            for child_name, child_data in state_data['states'].items():
+                check_state(name_path + [child_name], child_data)
+
+    # Start validation from root
+    root_wrapper = {'states': data.get('states', {}), 'initial': data.get('initial')}
+    # Root pseudo-check
+    if 'initial' not in data:
+        errors.append("Root model missing 'initial' state.")
+    else:
+        if data['initial'] not in data['states']:
+             errors.append(f"Root initial state '{data['initial']}' does not exist.")
+    
+    check_state(['root'], data)
+
+    if errors:
+        print("\n!!! VALIDATION ERRORS !!!")
+        for e in errors:
+            print(f"- {e}")
+        print("-------------------------")
+        sys.exit(1)
+    print("Model OK.")
 
 def main():
     parser = argparse.ArgumentParser(description="State Machine Builder")
     parser.add_argument("file", help="Input YAML file")
-    parser.add_argument("--lang", choices=['c', 'rust'], default='c', help="Output language (c or rust)")
+    parser.add_argument("--lang", choices=['c', 'rust'], default='rust', help="Output language")
     args = parser.parse_args()
 
     if not os.path.exists(args.file):
         sys.exit(f"Error: File '{args.file}' not found.")
 
-    with open(args.file, 'r') as f:
-        data = yaml.safe_load(f)
+    try:
+        with open(args.file, 'r') as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        sys.exit(f"YAML Syntax Error: {e}")
 
-    # Extract decisions logic
+    # Step 0: Validate
+    validate_model(data)
+
+    # Extract decisions
     decisions = data.get('decisions', {})
 
-    # 1. Generate Visuals (DOT)
-    print(f"Generating Graphviz DOT...")
-    dot_content = generate_dot(data, decisions)
-    with open("statemachine.dot", "w") as f:
-        f.write(dot_content)
-    print(" -> statemachine.dot created.")
+    try:
+        # Step 1: Generate Visuals
+        print(f"Generating Graphviz DOT...")
+        dot_content = generate_dot(data, decisions)
+        with open("statemachine.dot", "w") as f:
+            f.write(dot_content)
+        print(" -> statemachine.dot created.")
 
-    # 2. Generate Code
-    if args.lang == 'c':
-        print("Generating C code...")
-        gen = CGenerator(data)
-        header, source = gen.generate()
-        with open("statemachine.h", "w") as f: f.write(header)
-        with open("statemachine.c", "w") as f: f.write(source)
-        print(" -> statemachine.c / .h created.")
-        
-    elif args.lang == 'rust':
-        print("Generating Rust code...")
-        gen = RustGenerator(data)
-        source, _ = gen.generate()
-        with open("statemachine.rs", "w") as f: f.write(source)
-        print(" -> statemachine.rs created.")
+        # Step 2: Generate Code
+        if args.lang == 'c':
+            from codegen.c_lang import CGenerator
+            print("Generating C code...")
+            gen = CGenerator(data)
+            header, source = gen.generate()
+            with open("statemachine.h", "w") as f: f.write(header)
+            with open("statemachine.c", "w") as f: f.write(source)
+            print(" -> statemachine.c / .h created.")
+            
+        elif args.lang == 'rust':
+            print("Generating Rust code...")
+            gen = RustGenerator(data)
+            source, _ = gen.generate()
+            with open("statemachine.rs", "w") as f: f.write(source)
+            print(" -> statemachine.rs created.")
+            
+    except Exception as e:
+        # Catch-all for logic bugs in the generator (or uncaught validation issues)
+        print(f"\nCRITICAL ERROR during generation: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
