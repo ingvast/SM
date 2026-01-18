@@ -70,74 +70,57 @@ FUNC_PREAMBLE = """
 """
 
 LEAF_TEMPLATE = """
-void state_{c_name}_entry(SM_Context* ctx) {{
+void state_{c_name}_start(SM_Context* ctx) {{
     ctx->state_timers[{state_id}] = ctx->now;
     {preamble}
     {hook_entry}
-    {history_save}
-    {entry}
     ctx->{parent_ptr} = state_{c_name}_run;
 }}
 
-void state_{c_name}_exit(SM_Context* ctx) {{
-    {preamble}
-    {hook_exit}
-    {exit}
+void state_{c_name}_entry(SM_Context* ctx) {{
+    state_{c_name}_start(ctx);
 }}
-
-void state_{c_name}_run(SM_Context* ctx) {{
-    {preamble}
-    {hook_run}
-    {run}
-    {transitions}
-}}
+...
 """
 
 COMPOSITE_OR_TEMPLATE = """
-void state_{c_name}_entry(SM_Context* ctx) {{
+void state_{c_name}_start(SM_Context* ctx) {{
     ctx->state_timers[{state_id}] = ctx->now;
     {preamble}
     {hook_entry}
-    {history_save}
-    {entry}
     {set_parent}
-    
+}}
+
+void state_{c_name}_entry(SM_Context* ctx) {{
+    state_{c_name}_start(ctx);
     if (({history}) && ctx->{self_hist_ptr} != NULL) {{
         ctx->{self_hist_ptr}(ctx);
     }} else {{
         state_{initial_target}_entry(ctx);
     }}
 }}
-
-void state_{c_name}_exit(SM_Context* ctx) {{
-    {preamble}
-    {hook_exit}
-    {exit}
-}}
-
-void state_{c_name}_run(SM_Context* ctx) {{
-    {preamble}
-    {hook_run}
-    {run}
-    if (ctx->{self_ptr}) ctx->{self_ptr}(ctx);
-    {transitions}
-}}
+...
 """
 
 COMPOSITE_AND_TEMPLATE = """
-void state_{c_name}_entry(SM_Context* ctx) {{
+void state_{c_name}_start(SM_Context* ctx) {{
     ctx->state_timers[{state_id}] = ctx->now;
     {preamble}
     {hook_entry}
     {history_save}
-    {entry}
     {set_parent}
+}}
+
+void state_{c_name}_entry(SM_Context* ctx) {{
+    state_{c_name}_start(ctx);
+    // Parallel Entry: Start all regions
     {parallel_entries}
 }}
 
 void state_{c_name}_exit(SM_Context* ctx) {{
     {preamble}
     {hook_exit}
+    // Parallel Exit: Force exit all active regions
     {parallel_exits}
     {exit}
 }}
@@ -146,6 +129,7 @@ void state_{c_name}_run(SM_Context* ctx) {{
     {preamble}
     {hook_run}
     {run}
+    // Parallel Run: Tick all regions
     {parallel_ticks}
     {transitions}
 }}
@@ -220,9 +204,8 @@ void sm_get_state_str(StateMachine* sm, char* buffer, size_t max_len) {
             
             exit_funcs = get_exit_sequence(name_path, target_path, lambda p: "state_" + flatten_name(p, "_") + "_exit")
             
-            # NEW: Entry Sequence
             from .common import get_entry_sequence
-            entry_funcs = get_entry_sequence(name_path, target_path, lambda p: "state_" + flatten_name(p, "_") + "_entry")
+            entry_funcs = get_entry_sequence(name_path, target_path, lambda p, s: "state_" + flatten_name(p, "_") + s)
             
             exit_calls = "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
             entry_calls = "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])

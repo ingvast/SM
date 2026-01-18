@@ -58,7 +58,7 @@ states:
   run:
     initial: a
     transitions:
-      - test: ctx.counter ==8
+      - test: ctx.counter == 8
         transfer_to: done
 
     states:
@@ -93,9 +93,6 @@ states:
                 transfer_to: /run/c/e
 
           e:
-            transitions:
-              - test: false
-                transfer_to: /run/a
             initial: f
             states:
 

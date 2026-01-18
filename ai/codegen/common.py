@@ -44,18 +44,21 @@ def get_exit_sequence(source_path, target_path, func_formatter):
 def get_entry_sequence(source_path, target_path, func_formatter):
     lca_index = get_lca_index(source_path, target_path)
     
-    # If lca_index == len(target_path), it means the Target IS the LCA.
-    # (i.e., we are transitioning UP to a container we are already in).
-    # We must decrement the index to ensure we call the Target's entry function.
-    # This resets the Parent to its 'initial' state.
+    # Ancestor Fix
     if lca_index == len(target_path):
         lca_index -= 1
 
     entries = []
-    # Enter from LCA child up to Target
+    # Loop from LCA child down to Target
     for i in range(lca_index, len(target_path)):
         state_segment = target_path[:i+1]
-        func_name = func_formatter(state_segment)
+        
+        # LOGIC CHANGE:
+        # If this segment IS the final target, use "_entry" (Full)
+        # If this segment is intermediate, use "_start" (Shallow)
+        suffix = "_entry" if i == len(target_path) - 1 else "_start"
+        
+        func_name = func_formatter(state_segment, suffix)
         entries.append(func_name)
     return entries
 

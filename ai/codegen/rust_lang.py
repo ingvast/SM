@@ -80,15 +80,20 @@ FUNC_PREAMBLE = """
     let time = ctx.now - ctx.state_timers[{state_id}];
 """
 
-# SAFETY UPDATE: Entry does NOT call Run.
+# In codegen/rust_lang.py
+
 LEAF_TEMPLATE = """
-fn state_{c_name}_entry(ctx: &mut Context) {{
+fn state_{c_name}_start(ctx: &mut Context) {{
     ctx.state_timers[{state_id}] = ctx.now;
     {preamble}
     {hook_entry}
-    {history_save}
-    {entry}
+    // Set pointer, but NO run call
     ctx.{parent_ptr} = Some(state_{c_name}_run);
+}}
+
+fn state_{c_name}_entry(ctx: &mut Context) {{
+    state_{c_name}_start(ctx);
+    // Leaf has no children to enter
 }}
 
 fn state_{c_name}_exit(ctx: &mut Context) {{
@@ -106,14 +111,17 @@ fn state_{c_name}_run(ctx: &mut Context) {{
 """
 
 COMPOSITE_OR_TEMPLATE = """
-fn state_{c_name}_entry(ctx: &mut Context) {{
+fn state_{c_name}_start(ctx: &mut Context) {{
     ctx.state_timers[{state_id}] = ctx.now;
     {preamble}
     {hook_entry}
-    {history_save}
-    {entry}
     {set_parent}
+}}
+
+fn state_{c_name}_entry(ctx: &mut Context) {{
+    state_{c_name}_start(ctx);
     
+    // Recurse to child
     if ({history}) && ctx.{self_hist_ptr}.is_some() {{
         let hist_fn = ctx.{self_hist_ptr}.unwrap();
         hist_fn(ctx);
@@ -140,22 +148,22 @@ fn state_{c_name}_run(ctx: &mut Context) {{
 """
 
 COMPOSITE_AND_TEMPLATE = """
-fn state_{c_name}_entry(ctx: &mut Context) {{
+fn state_{c_name}_start(ctx: &mut Context) {{
     ctx.state_timers[{state_id}] = ctx.now;
     {preamble}
     {hook_entry}
-    {history_save}
-    {entry}
     {set_parent}
-    
-    // Parallel Entry
+}}
+
+fn state_{c_name}_entry(ctx: &mut Context) {{
+    state_{c_name}_start(ctx);
+    // Start all parallel regions
     {parallel_entries}
 }}
 
 fn state_{c_name}_exit(ctx: &mut Context) {{
     {preamble}
     {hook_exit}
-    // Parallel Exit
     {parallel_exits}
     {exit}
 }}
@@ -164,11 +172,11 @@ fn state_{c_name}_run(ctx: &mut Context) {{
     {preamble}
     {hook_run}
     {run}
-    // Parallel Run
     {parallel_ticks}
     {transitions}
 }}
 """
+
 
 INSPECTOR_TEMPLATE = """
 fn inspect_{c_name}(ctx: &Context, buf: &mut String) {{
@@ -217,8 +225,8 @@ class RustGenerator:
 
         return header + source, ""
 
-    def _fmt_entry(self, path):
-        return "state_" + flatten_name(path, "_") + "_entry"
+    def _fmt_entry(self, path, suffix="_entry"):
+        return "state_" + flatten_name(path, "_") + suffix
 
     def emit_transition_logic(self, name_path, t, indent_level=1):
         indent = "    " * indent_level
