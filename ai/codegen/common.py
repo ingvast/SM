@@ -4,16 +4,13 @@ import re
 def flatten_name(path, separator="_"):
     return separator.join(path)
 
-# --- NEW: Helper for Graphviz IDs ---
+# --- VISUAL ID HELPER ---
 def get_graph_id(path):
     """
     Creates a unique, safe ID for Graphviz.
-    1. Joins with double underscore '__' to prevent collisions with user underscores.
-    2. Replaces non-alphanumeric characters (like '-') with '_'.
+    Replaces special chars to avoid syntax errors.
     """
-    # Join with distinct separator
     raw_id = "__".join(path)
-    # Replace anything that isn't a-z, A-Z, 0-9, or _
     safe_id = re.sub(r'[^a-zA-Z0-9_]', '_', raw_id)
     return safe_id
 
@@ -67,30 +64,31 @@ def get_entry_sequence(source_path, target_path, func_formatter):
 # --- VISUALIZATION ---
 
 def find_composites(name_path, data, result_set):
-    # Use SAFE ID for set storage
     my_id = get_graph_id(name_path)
     if 'states' in data:
         result_set.add(my_id)
         for child_name, child_data in data['states'].items():
             find_composites(name_path + [child_name], child_data, result_set)
 
-def generate_dot_recursive(name_path, data, lines, composite_ids, decisions):
-    # Use SAFE ID for node definition
+def generate_dot_recursive(name_path, data, node_lines, edge_lines, composite_ids, decisions):
+    """
+    Separates output into node_lines (structure) and edge_lines (connections).
+    This prevents implicit node creation inside the wrong cluster.
+    """
     my_id = get_graph_id(name_path)
-    
     is_composite = 'states' in data
     indent = "    " * len(name_path)
 
+    # 1. Define Structure (Nodes & Clusters)
     if is_composite:
-        # Cluster names MUST start with 'cluster_' to be drawn as boxes
-        lines.append(f"{indent}subgraph cluster_{my_id} {{")
-        lines.append(f"{indent}    label = \"{name_path[-1]}\";")
+        node_lines.append(f"{indent}subgraph cluster_{my_id} {{")
+        node_lines.append(f"{indent}    label = \"{name_path[-1]}\";")
         
         if data.get('parallel', False):
-             lines.append(f"{indent}    style=dashed; color=black; penwidth=1.5; node [style=filled, fillcolor=white];")
-             # Anchors for compound edges
-             lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
+             node_lines.append(f"{indent}    style=dashed; color=black; penwidth=1.5; node [style=filled, fillcolor=white];")
+             node_lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
              
+             # Draw internal parallel connections immediately as they are structural
              for child_name, child_data in data['states'].items():
                  child_path = name_path + [child_name]
                  child_id = get_graph_id(child_path)
@@ -98,11 +96,11 @@ def generate_dot_recursive(name_path, data, lines, composite_ids, decisions):
                  tgt = f"{child_id}_start" if child_id in composite_ids else child_id
                  lhead = f"lhead=cluster_{child_id}" if child_id in composite_ids else ""
                  
-                 lines.append(f"{indent}    {my_id}_start -> {tgt} [style=dashed, {lhead}];")
+                 node_lines.append(f"{indent}    {my_id}_start -> {tgt} [style=dashed, {lhead}];")
         else:
-             lines.append(f"{indent}    style=rounded; color=black; penwidth=1.0; node [style=filled, fillcolor=white];")
+             node_lines.append(f"{indent}    style=rounded; color=black; penwidth=1.0; node [style=filled, fillcolor=white];")
              if data.get('history', False):
-                 lines.append(f"{indent}    {my_id}_hist [shape=circle, label=\"H\", width=0.3];")
+                 node_lines.append(f"{indent}    {my_id}_hist [shape=circle, label=\"H\", width=0.3];")
              
              init_child_path = name_path + [data['initial']]
              init_child_id = get_graph_id(init_child_path)
@@ -110,27 +108,28 @@ def generate_dot_recursive(name_path, data, lines, composite_ids, decisions):
              tgt = f"{init_child_id}_start" if init_child_id in composite_ids else init_child_id
              lhead = f"lhead=cluster_{init_child_id}" if init_child_id in composite_ids else ""
              
-             lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
-             lines.append(f"{indent}    {my_id}_start -> {tgt} [{lhead}];")
+             node_lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
+             node_lines.append(f"{indent}    {my_id}_start -> {tgt} [{lhead}];")
 
+        # Recurse for children
         for child_name, child_data in data['states'].items():
-            generate_dot_recursive(name_path + [child_name], child_data, lines, composite_ids, decisions)
-        lines.append(f"{indent}}}")
+            generate_dot_recursive(name_path + [child_name], child_data, node_lines, edge_lines, composite_ids, decisions)
+        
+        node_lines.append(f"{indent}}}")
     else:
-        # Leaf Node
+        # Leaf Node Definition
         label = name_path[-1]
         shape = "box"
         style = "rounded,filled"
         
-        # Decision visualization override (if users use transient states as decisions)
         if data.get('decision', False):
             shape = "diamond"
             style = "filled"
             label = "" 
         
-        lines.append(f"{indent}{my_id} [label=\"{label}\", shape={shape}, style=\"{style}\", fillcolor=white];")
+        node_lines.append(f"{indent}{my_id} [label=\"{label}\", shape={shape}, style=\"{style}\", fillcolor=white];")
 
-    # Transitions
+    # 2. Define Transitions (Edges) - stored separately!
     for t in data.get('transitions', []):
         target_str = t['transfer_to']
         is_decision = target_str in decisions
@@ -138,13 +137,11 @@ def generate_dot_recursive(name_path, data, lines, composite_ids, decisions):
         target_path = resolve_target_path(name_path, target_str)
         target_id = get_graph_id(target_path)
         
-        # Source is usually 'my_id' (or my_id_start if composite)
-        # But visually, transitions usually originate from the box itself
         src = f"{my_id}_start" if is_composite else my_id
         ltail = f"ltail=cluster_{my_id}" if is_composite else ""
         
         if is_decision:
-            # Decisions are at root usually, need safe ID
+            # Decision nodes are top-level
             tgt = get_graph_id(['root', target_str]) if target_str in decisions else target_str
             lhead = ""
         else:
@@ -157,25 +154,28 @@ def generate_dot_recursive(name_path, data, lines, composite_ids, decisions):
         attrs.append(f'label="{safe_label}"')
         attrs.append('fontsize=10')
         
-        lines.append(f"{indent}{src} -> {tgt} [{', '.join(attrs)}];")
+        # Add to the EDGE list, not the node list
+        edge_lines.append(f"{src} -> {tgt} [{', '.join(attrs)}];")
 
 def generate_dot(root_data, decisions):
     composite_ids = set()
     find_composites(['root'], root_data, composite_ids)
     
-    lines = ["digraph StateMachine {", "    compound=true; fontname=\"Arial\"; node [fontname=\"Arial\"]; edge [fontname=\"Arial\"];"]
+    # Separate lists
+    node_lines = []
+    edge_lines = []
     
-    generate_dot_recursive(['root'], root_data, lines, composite_ids, decisions)
+    # 1. Generate Structure
+    generate_dot_recursive(['root'], root_data, node_lines, edge_lines, composite_ids, decisions)
     
-    # Decisions (Diamonds)
+    # 2. Generate Decision Nodes (Structure)
     for name, transitions in decisions.items():
-        # Safe ID for decision node
         dec_id = get_graph_id(['root', name])
-        lines.append(f"    {dec_id} [label=\"?\", shape=diamond, style=filled, fillcolor=lightyellow];")
+        node_lines.append(f"    {dec_id} [label=\"?\", shape=diamond, style=filled, fillcolor=lightyellow];")
         
         for t in transitions:
             raw_tgt = t['transfer_to']
-            target_path = resolve_target_path(['root', name], raw_tgt) # Treat decision as if at root
+            target_path = resolve_target_path(['root', name], raw_tgt) 
             target_id = get_graph_id(target_path)
             
             tgt_node = f"{target_id}_start" if target_id in composite_ids else target_id
@@ -185,7 +185,17 @@ def generate_dot(root_data, decisions):
             attr = f'label="{lbl}", fontsize=10'
             if lhead: attr += f", {lhead}"
             
-            lines.append(f"    {dec_id} -> {tgt_node} [{attr}];")
+            edge_lines.append(f"    {dec_id} -> {tgt_node} [{attr}];")
 
+    # 3. Assemble File
+    # Header -> Nodes -> Edges -> Footer
+    lines = ["digraph StateMachine {", "    compound=true; fontname=\"Arial\"; node [fontname=\"Arial\"]; edge [fontname=\"Arial\"];"]
+    
+    lines.append("    // --- Structures ---")
+    lines.extend(node_lines)
+    
+    lines.append("    // --- Transitions ---")
+    lines.extend(edge_lines)
+    
     lines.append("}")
     return "\n".join(lines)

@@ -59,7 +59,7 @@ states:
     initial: a
     transitions:
       - test: ctx.counter == 8
-        transfer_to: done
+        transfer_to: /run/d
 
     states:
       a:
@@ -70,6 +70,8 @@ states:
             transfer_to: /run/c
           - test: ctx.counter == 5
             transfer_to: /run/c/d
+          - test: ctx.counter == 11
+            transfer_to: /run/d
 
       b:
         transitions:
@@ -95,20 +97,23 @@ states:
           e:
             initial: f
             states:
-
               f:
                 transitions:
                   - test: false
                     transfer_to: /run/a
+      d:
+        history: true
+        initial: a
 
-      # paralell: true
-      # states:
-      #   p1:
-      #     states:
-      #       a:
-      #
-      #       b:
-      #
-      #   p2:
-      #     states:
-      #
+        states:
+          a:
+            transitions:
+              - test: ctx.counter == 09
+                transfer_to: b
+          b:
+            transitions:
+              - test: ctx.counter == 10
+                transfer_to: /run/a
+              - test: ctx.counter == 12
+                transfer_to: /done
+
