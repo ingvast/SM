@@ -30,7 +30,6 @@ pub struct StateMachine {
 
 impl StateMachine {
     pub fn new() -> Self {
-        // FIX: 'mut' removed here to silence warning
         let ctx = Context {
             now: 0.0,
             state_timers: [0.0; %d],
@@ -218,7 +217,6 @@ class RustGenerator:
 
         user_init = self.data.get('context_init', '')
 
-        # FIX: Pass 'self.includes' (User Includes) to the first placeholder
         header = HEADER % (
             self.includes, 
             self.state_counter,
@@ -298,8 +296,15 @@ class RustGenerator:
                 set_parent_code += f"ctx.{parent_run_ptr} = Some(state_{my_c_name}_run);\n    "
                 set_parent_code += f"ctx.{parent_exit_ptr} = Some(state_{my_c_name}_exit);"
                 
+                # --- FIX FOR HISTORY ---
+                # If the parent has history enabled, save THIS state's entry function
+                if parent_hist_ptr:
+                    set_parent_code += f"\n    ctx.{parent_hist_ptr} = Some(state_{my_c_name}_entry);"
+                # -----------------------
+
                 clear_parent_code += f"ctx.{parent_run_ptr} = None;\n    "
                 clear_parent_code += f"ctx.{parent_exit_ptr} = None;"
+                # Note: We do NOT clear history on exit. It must persist.
                 
             trans_code = ""
             for i, t in enumerate(data.get('transitions', [])):
@@ -333,6 +338,8 @@ class RustGenerator:
                         p_exits += f"    if let Some(f) = ctx.{region_exit_ptr} {{ f(ctx); }}\n"
                         p_ticks += f"    if let Some(f) = ctx.{region_ptr} {{ f(ctx); }}\n"
                         
+                        # Parallel regions don't usually support history themselves in this simple model,
+                        # but we pass None for now.
                         self.recurse(child_path, child_data, (region_ptr, region_exit_ptr, None))
 
                     func_body = COMPOSITE_AND_TEMPLATE.format(
@@ -369,8 +376,12 @@ class RustGenerator:
                         set_parent=set_parent_code, clear_parent=clear_parent_code
                     )
                     
+                    # Pass the history pointer down ONLY if this state actually uses history
+                    use_history = data.get('history', False)
+                    child_hist_ptr = my_hist if use_history else None
+
                     for child_name, child_data in data['states'].items():
-                        self.recurse(name_path + [child_name], child_data, (my_ptr, my_exit_ptr, my_hist))
+                        self.recurse(name_path + [child_name], child_data, (my_ptr, my_exit_ptr, child_hist_ptr))
             else:
                 func_body = LEAF_TEMPLATE.format(
                     c_name=my_c_name, state_id=my_id_num, preamble=preamble,
