@@ -60,6 +60,8 @@ states:
     transitions:
       - test: ctx.counter == 8
         transfer_to: /run/d
+      - test: ctx.counter == 19
+        transfer_to: done
         
 
     states:
@@ -74,7 +76,7 @@ states:
           - test: ctx.counter == 11
             transfer_to: /run/d
           - test: ctx.counter == 16
-            transfer_to: /done
+            transfer_to: /run/g
 
 
       b:
@@ -129,22 +131,19 @@ states:
             states:
               a:
                 transitions:
-                  - test: ctx.counter == 14
+                  - test: ctx.counter == 17
                     transfer_to: b
               b: 
-                transitions:
-                  - test: ctx.counter == 15
-                    transfer_to: /run/a
           b:
             initial: b
             states:
               a: { }
               b:
                 transitions:
-                  - test: ctx.counter == 13
+                  - test: ctx.counter == 17
                     transfer_to: c
               c: 
                 transitions:
-                  - test: ctx.counter == 14
+                  - test: ctx.counter == 18
                     transfer_to: a
 
