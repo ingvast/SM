@@ -3,7 +3,7 @@
 # * Up.
 # * Down
 # * Into a leg with history
-# * Into a paralell state
+# * Into a parallel state
 # From a state with internal states
 
 # main should count up a counter each time it runs a tick.
@@ -60,6 +60,7 @@ states:
     transitions:
       - test: ctx.counter == 8
         transfer_to: /run/d
+        
 
     states:
       a:
@@ -72,6 +73,9 @@ states:
             transfer_to: /run/c/d
           - test: ctx.counter == 11
             transfer_to: /run/d
+          - test: ctx.counter == 16
+            transfer_to: /done
+
 
       b:
         transitions:
@@ -115,5 +119,32 @@ states:
               - test: ctx.counter == 10
                 transfer_to: /run/a
               - test: ctx.counter == 12
-                transfer_to: /done
+                transfer_to: /run/g
+
+      g:
+        parallel: true
+        states:
+          a:
+            initial: a
+            states:
+              a:
+                transitions:
+                  - test: ctx.counter == 14
+                    transfer_to: b
+              b: 
+                transitions:
+                  - test: ctx.counter == 15
+                    transfer_to: /run/a
+          b:
+            initial: b
+            states:
+              a: { }
+              b:
+                transitions:
+                  - test: ctx.counter == 13
+                    transfer_to: c
+              c: 
+                transitions:
+                  - test: ctx.counter == 14
+                    transfer_to: a
 

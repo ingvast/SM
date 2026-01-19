@@ -179,6 +179,11 @@ fn state_{c_name}_run(ctx: &mut Context) {{
     {hook_run}
     {transitions}
     {run}
+    
+    // Safety: Ensure we are still active before ticking children.
+    // A transition above (or in a sibling region) might have exited us.
+    {safety_check}
+
     {parallel_ticks}
 }}
 """
@@ -288,7 +293,6 @@ class RustGenerator:
         }}"""
                 self.outputs['impls'].append(method)
 
-            # Generate "Set Parent" AND "Clear Parent" blocks dynamically
             set_parent_code = ""
             clear_parent_code = ""
             
@@ -296,15 +300,11 @@ class RustGenerator:
                 set_parent_code += f"ctx.{parent_run_ptr} = Some(state_{my_c_name}_run);\n    "
                 set_parent_code += f"ctx.{parent_exit_ptr} = Some(state_{my_c_name}_exit);"
                 
-                # --- FIX FOR HISTORY ---
-                # If the parent has history enabled, save THIS state's entry function
                 if parent_hist_ptr:
                     set_parent_code += f"\n    ctx.{parent_hist_ptr} = Some(state_{my_c_name}_entry);"
-                # -----------------------
 
                 clear_parent_code += f"ctx.{parent_run_ptr} = None;\n    "
                 clear_parent_code += f"ctx.{parent_exit_ptr} = None;"
-                # Note: We do NOT clear history on exit. It must persist.
                 
             trans_code = ""
             for i, t in enumerate(data.get('transitions', [])):
@@ -322,24 +322,37 @@ class RustGenerator:
 
             if is_composite:
                 if is_parallel:
+                    # SAFETY CHECK GENERATION
+                    # We create a check that verifies we are still the active state in our parent.
+                    # This handles the case where a child transitions and exits us.
+                    if parent_run_ptr:
+                        safety_check = f"if !ctx.in_state_{my_c_name}() {{ return; }}"
+                    else:
+                        safety_check = "" # Root is always active
+
                     p_entries, p_exits, p_ticks = "", "", ""
                     for child_name, child_data in data['states'].items():
                         child_path = name_path + [child_name]
-                        region_ptr = f"ptr_{flatten_name(child_path, '_')}"
-                        region_exit_ptr = f"{region_ptr}_exit"
+                        child_c_name = flatten_name(child_path, "_")
                         
+                        region_ptr = f"ptr_{child_c_name}_region"
+                        region_exit_ptr = f"{region_ptr}_exit"
+
                         self.outputs['context_ptrs'].append(f"pub {region_ptr}: Option<StateFn>,")
                         self.outputs['context_ptrs'].append(f"pub {region_exit_ptr}: Option<StateFn>,")
                         self.outputs['context_init'].append(f"{region_ptr}: None,")
                         self.outputs['context_init'].append(f"{region_exit_ptr}: None,")
 
                         init_leaf = flatten_name(child_path + [child_data['initial']], "_")
-                        p_entries += f"    state_{init_leaf}_entry(ctx);\n"
+                        p_entries += f"    state_{child_c_name}_entry(ctx);\n"
                         p_exits += f"    if let Some(f) = ctx.{region_exit_ptr} {{ f(ctx); }}\n"
-                        p_ticks += f"    if let Some(f) = ctx.{region_ptr} {{ f(ctx); }}\n"
                         
-                        # Parallel regions don't usually support history themselves in this simple model,
-                        # but we pass None for now.
+                        # TICK LOGIC:
+                        p_ticks += f"    state_{child_c_name}_run(ctx);\n"
+                        # Inject Safety Check AFTER every child tick
+                        if safety_check:
+                            p_ticks += f"    {safety_check}\n"
+                        
                         self.recurse(child_path, child_data, (region_ptr, region_exit_ptr, None))
 
                     func_body = COMPOSITE_AND_TEMPLATE.format(
@@ -348,8 +361,10 @@ class RustGenerator:
                         entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
                         transitions=trans_code, 
                         set_parent=set_parent_code, clear_parent=clear_parent_code,
-                        parallel_entries=p_entries, parallel_exits=p_exits, parallel_ticks=p_ticks
+                        parallel_entries=p_entries, parallel_exits=p_exits, parallel_ticks=p_ticks,
+                        safety_check=safety_check
                     )
+
                 else:
                     my_ptr = f"ptr_{my_c_name}"
                     my_exit_ptr = f"{my_ptr}_exit"
@@ -376,7 +391,6 @@ class RustGenerator:
                         set_parent=set_parent_code, clear_parent=clear_parent_code
                     )
                     
-                    # Pass the history pointer down ONLY if this state actually uses history
                     use_history = data.get('history', False)
                     child_hist_ptr = my_hist if use_history else None
 
@@ -398,7 +412,7 @@ class RustGenerator:
 
     def gen_inspector(self, name_path, data, ptr_name_struct):
         my_c_name = flatten_name(name_path, "_")
-        disp_name = "" if name_path == ['root'] else "/" + name_path[-1]
+        disp_name = "" if name_path == ['root'] else name_path[-1]
         
         push_name = f'buf.push_str("{disp_name}");' if disp_name else ""
         content = ""
@@ -406,13 +420,13 @@ class RustGenerator:
         is_composite = 'states' in data
         if is_composite:
             if data.get('parallel', False):
-                content += 'buf.push_str("[");\n'
+                content += 'buf.push_str("/[");\n'
                 children = list(data['states'].items())
                 for i, (child_name, child_data) in enumerate(children):
                     child_path = name_path + [child_name]
                     child_func = f"inspect_{flatten_name(child_path, '_')}"
-                    region_ptr = f"ptr_{flatten_name(child_path, '_')}"
-                    self.gen_inspector(child_path, child_data, region_ptr)
+                    
+                    self.gen_inspector(child_path, child_data, None)
                     content += f"    {child_func}(ctx, buf);\n"
                     if i < len(children)-1: content += '    buf.push_str(",");\n'
                 content += 'buf.push_str("]");\n'
@@ -425,7 +439,11 @@ class RustGenerator:
                 for child_name, child_data in data['states'].items():
                     c_name = flatten_name(name_path + [child_name], "_")
                     else_txt = "else " if not first else ""
-                    content += f"    {else_txt}if ctx.{my_ptr}.map(|f| f as usize) == Some(state_{c_name}_run as usize) {{ inspect_{c_name}(ctx, buf); }}\n"
+                    
+                    content += f"    {else_txt}if ctx.{my_ptr}.map(|f| f as usize) == Some(state_{c_name}_run as usize) {{\n"
+                    content += f'        buf.push_str("/");\n'
+                    content += f"        inspect_{c_name}(ctx, buf);\n"
+                    content += "    }\n"
                     first = False
 
         self.inspect_list.append(INSPECTOR_TEMPLATE.format(c_name=my_c_name, push_name=push_name, content=content))
