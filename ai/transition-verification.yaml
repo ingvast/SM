@@ -131,19 +131,22 @@ states:
             states:
               a:
                 transitions:
-                  - test: ctx.counter == 17
+                  - test: ctx.counter == 14 || ctx.counter == 18
                     transfer_to: b
-              b: 
+              b:  
+                transitions:
+                  - test: ctx.counter == 15 
+                    transfer_to: /run/a
           b:
             initial: b
             states:
               a: { }
               b:
                 transitions:
-                  - test: ctx.counter == 17
+                  - test: ctx.counter == 13 || ctx.counter == 17
                     transfer_to: c
               c: 
                 transitions:
-                  - test: ctx.counter == 18
+                  - test: ctx.counter == 14 || ctx.counter == 18
                     transfer_to: a
 
