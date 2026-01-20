@@ -1,4 +1,4 @@
-from .common import flatten_name, resolve_target_path, get_exit_sequence, get_entry_sequence
+from .common import flatten_name, resolve_target_path, get_exit_sequence, get_entry_sequence, parse_fork_target, resolve_state_data
 import sys
 
 HEADER = """
@@ -81,11 +81,14 @@ FUNC_PREAMBLE = """
     let time = ctx.now - ctx.state_timers[{state_id}];
 """
 
+# FIX: Added {entry} back into the _start function for all templates
+
 LEAF_TEMPLATE = """
 fn state_{c_name}_start(ctx: &mut Context) {{
     ctx.state_timers[{state_id}] = ctx.now;
     {preamble}
     {hook_entry}
+    {entry}
     {set_parent}
 }}
 
@@ -113,6 +116,7 @@ fn state_{c_name}_start(ctx: &mut Context) {{
     ctx.state_timers[{state_id}] = ctx.now;
     {preamble}
     {hook_entry}
+    {entry}
     {set_parent}
 }}
 
@@ -156,6 +160,7 @@ fn state_{c_name}_start(ctx: &mut Context) {{
     ctx.state_timers[{state_id}] = ctx.now;
     {preamble}
     {hook_entry}
+    {entry}
     {set_parent}
 }}
 
@@ -180,8 +185,7 @@ fn state_{c_name}_run(ctx: &mut Context) {{
     {transitions}
     {run}
     
-    // Safety: Ensure we are still active before ticking children.
-    // A transition above (or in a sibling region) might have exited us.
+    // Safety check
     {safety_check}
 
     {parallel_ticks}
@@ -241,7 +245,7 @@ class RustGenerator:
     def emit_transition_logic(self, name_path, t, indent_level=1):
         indent = "    " * indent_level
         code = ""
-        target_str = t['transfer_to']
+        raw_target = t['transfer_to']
         
         test_val = t.get('test', True)
         if test_val is True: test_cond = "true"
@@ -253,21 +257,71 @@ class RustGenerator:
 
         code += f"{indent}if {test_cond} {{\n"
 
-        if target_str in self.decisions:
-            decision_rules = self.decisions[target_str]
+        if raw_target in self.decisions:
+            decision_rules = self.decisions[raw_target]
             for rule in decision_rules:
                 code += self.emit_transition_logic(name_path, rule, indent_level + 1)
         else:
-            target_path = resolve_target_path(name_path, target_str)
-            
-            exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
-            entry_funcs = get_entry_sequence(name_path, target_path, self._fmt_entry)
-            
-            exit_calls = "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
-            entry_calls = "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
+            # 1. Parse Fork
+            base_target, forks = parse_fork_target(raw_target)
+            target_path = resolve_target_path(name_path, base_target)
 
-            code += f"{exit_calls}"
-            code += f"{entry_calls}"
+            # IMPLICIT PARALLEL DETECTION
+            if forks is None:
+                parallel_ancestor_idx = -1
+                for i in range(len(target_path)):
+                    partial_path = target_path[:i+1]
+                    s_data = resolve_state_data(self.data, partial_path)
+                    if s_data and s_data.get('parallel', False):
+                        parallel_ancestor_idx = i
+                        break
+                
+                if parallel_ancestor_idx != -1 and parallel_ancestor_idx < len(target_path) - 1:
+                    base_path_list = target_path[:parallel_ancestor_idx+1]
+                    fork_parts = target_path[parallel_ancestor_idx+1:]
+                    fork_str = "/".join(fork_parts)
+                    target_path = base_path_list
+                    forks = [fork_str]
+                    base_target = "/" + "/".join(base_path_list[1:])
+
+            # 2. Exit Logic
+            exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
+            code += "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
+
+            # 3. Entry Logic
+            if forks is None:
+                entry_funcs = get_entry_sequence(name_path, target_path, self._fmt_entry)
+                code += "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
+            else:
+                def _fmt_entry_forced_start(path, suffix):
+                    if path == target_path:
+                        return "state_" + flatten_name(path, "_") + "_start"
+                    return "state_" + flatten_name(path, "_") + suffix
+                
+                entry_funcs = get_entry_sequence(name_path, target_path, _fmt_entry_forced_start)
+                code += "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
+                
+                parallel_data = resolve_state_data(self.data, target_path)
+                if not parallel_data or 'states' not in parallel_data:
+                     pass 
+                else:
+                    for child_name, child_data in parallel_data['states'].items():
+                        matching_fork = None
+                        for fork in forks:
+                            parts = fork.split('/')
+                            if parts[0] == child_name:
+                                matching_fork = fork
+                                break
+                        
+                        if matching_fork:
+                            fork_target_path = target_path + matching_fork.split('/')
+                            deep_entries = get_entry_sequence(target_path, fork_target_path, self._fmt_entry)
+                            code += "".join([f"{indent}    {fn}(ctx);\n" for fn in deep_entries])
+                        else:
+                            child_path = target_path + [child_name]
+                            init_func = self._fmt_entry(child_path, "_entry")
+                            code += f"{indent}    {init_func}(ctx);\n"
+
             code += f"{indent}    return;\n"
 
         code += f"{indent}}}\n"
@@ -322,13 +376,10 @@ class RustGenerator:
 
             if is_composite:
                 if is_parallel:
-                    # SAFETY CHECK GENERATION
-                    # We create a check that verifies we are still the active state in our parent.
-                    # This handles the case where a child transitions and exits us.
                     if parent_run_ptr:
                         safety_check = f"if !ctx.in_state_{my_c_name}() {{ return; }}"
                     else:
-                        safety_check = "" # Root is always active
+                        safety_check = "" 
 
                     p_entries, p_exits, p_ticks = "", "", ""
                     for child_name, child_data in data['states'].items():
@@ -343,13 +394,9 @@ class RustGenerator:
                         self.outputs['context_init'].append(f"{region_ptr}: None,")
                         self.outputs['context_init'].append(f"{region_exit_ptr}: None,")
 
-                        init_leaf = flatten_name(child_path + [child_data['initial']], "_")
                         p_entries += f"    state_{child_c_name}_entry(ctx);\n"
                         p_exits += f"    if let Some(f) = ctx.{region_exit_ptr} {{ f(ctx); }}\n"
-                        
-                        # TICK LOGIC:
                         p_ticks += f"    state_{child_c_name}_run(ctx);\n"
-                        # Inject Safety Check AFTER every child tick
                         if safety_check:
                             p_ticks += f"    {safety_check}\n"
                         
@@ -413,7 +460,6 @@ class RustGenerator:
     def gen_inspector(self, name_path, data, ptr_name_struct):
         my_c_name = flatten_name(name_path, "_")
         disp_name = "" if name_path == ['root'] else name_path[-1]
-        
         push_name = f'buf.push_str("{disp_name}");' if disp_name else ""
         content = ""
 
@@ -425,7 +471,6 @@ class RustGenerator:
                 for i, (child_name, child_data) in enumerate(children):
                     child_path = name_path + [child_name]
                     child_func = f"inspect_{flatten_name(child_path, '_')}"
-                    
                     self.gen_inspector(child_path, child_data, None)
                     content += f"    {child_func}(ctx, buf);\n"
                     if i < len(children)-1: content += '    buf.push_str(",");\n'
@@ -434,12 +479,10 @@ class RustGenerator:
                 my_ptr = f"ptr_{my_c_name}"
                 for child_name, child_data in data['states'].items():
                     self.gen_inspector(name_path + [child_name], child_data, my_ptr)
-                
                 first = True
                 for child_name, child_data in data['states'].items():
                     c_name = flatten_name(name_path + [child_name], "_")
                     else_txt = "else " if not first else ""
-                    
                     content += f"    {else_txt}if ctx.{my_ptr}.map(|f| f as usize) == Some(state_{c_name}_run as usize) {{\n"
                     content += f'        buf.push_str("/");\n'
                     content += f"        inspect_{c_name}(ctx, buf);\n"

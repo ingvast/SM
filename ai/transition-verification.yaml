@@ -15,17 +15,20 @@ includes: |
   fn p( s : String) {
     println!("{}", s);
   }
+  fn finish(ctx: &mut Context) {
+    ctx.do_loop = false;
+  }
   
 
 # Rust-specific fields
 context: |
     pub counter: i32,
-    pub active_flag: bool,
+    pub do_loop: bool,
 
 # How to initialize the above fields in StateMachine::new()
 context_init: |
     counter: 0,
-    active_flag: false,
+    do_loop: true,
 
 hooks:
   entry: |
@@ -49,11 +52,9 @@ entry: |
 
 states:
   done:
-    exit: |
+    entry: |
       p("Done".into());
-      panic!("Program finished");
-    transitions:
-      - transfer_to: done
+      finish(ctx);
 
   run:
     initial: a
@@ -61,7 +62,7 @@ states:
       - test: ctx.counter == 8
         transfer_to: /run/d
       - test: ctx.counter == 19
-        transfer_to: done
+        transfer_to: /run/a
         
 
     states:
@@ -77,6 +78,10 @@ states:
             transfer_to: /run/d
           - test: ctx.counter == 16
             transfer_to: /run/g
+          - test: ctx.counter == 20
+            transfer_to: /run/g/[a/b,b/a]
+          - test: ctx.counter == 22
+            transfer_to: /run/g/a/b
 
 
       b:
@@ -137,6 +142,10 @@ states:
                 transitions:
                   - test: ctx.counter == 15 
                     transfer_to: /run/a
+                  - test: ctx.counter == 21 
+                    transfer_to: /run/a
+                  - test: ctx.counter == 23 
+                    transfer_to: /done
           b:
             initial: b
             states:

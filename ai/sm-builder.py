@@ -6,7 +6,8 @@ import os
 # Ensure we can import from local directory
 sys.path.append(os.getcwd())
 
-from codegen.common import generate_dot, resolve_target_path, flatten_name
+# Import the new parser helper
+from codegen.common import generate_dot, resolve_target_path, flatten_name, parse_fork_target, resolve_state_data
 from codegen.rust_lang import RustGenerator
 
 class BuildError(Exception):
@@ -16,16 +17,17 @@ def get_state_data(root_data, path_parts):
     """
     Navigates the data dictionary to find the state object at path_parts.
     Returns None if not found.
-    path_parts example: ['root', 'run', 'c']
     """
-    current = root_data
-    # Skip 'root' if it's the first element, as root_data IS the root object
+    current = {'states': root_data.get('states', {}), 'initial': root_data.get('initial')}
+    
+    # Handle root logic
+    if path_parts == ['root']:
+        return root_data
+        
     start_idx = 1 if (path_parts and path_parts[0] == 'root') else 0
     
     for part in path_parts[start_idx:]:
-        if 'states' not in current:
-            return None
-        if part not in current['states']:
+        if 'states' not in current or part not in current['states']:
             return None
         current = current['states'][part]
     return current
@@ -43,7 +45,7 @@ def validate_model(data):
         
         # Check Composite Validity
         if 'states' in state_data:
-            # Must have 'initial'
+            # Must have 'initial' unless parallel
             if 'initial' not in state_data and not state_data.get('parallel', False):
                 errors.append(f"State '{display_name}' is composite but missing 'initial' property.")
             elif 'initial' in state_data:
@@ -58,20 +60,40 @@ def validate_model(data):
                 errors.append(f"State '{display_name}', transition #{i+1}: Missing 'transfer_to'.")
                 continue
             
-            target = t['transfer_to']
-            # We don't validate targets pointing to Decisions yet (complex), 
-            # but we can validate State targets.
-            if target in data.get('decisions', {}):
+            raw_target = t['transfer_to']
+            
+            # Skip decision validation for now (decisions are at root level)
+            if raw_target in data.get('decisions', {}):
                 continue
 
-            target_path = resolve_target_path(name_path, target)
-            print(f"DEBUG: Resolving '{target}' from '{name_path}' -> Looking for: {target_path}") 
+            # --- NEW: Handle Fork Syntax ---
+            base_target, forks = parse_fork_target(raw_target)
+            
+            # 1. Resolve the Base Target
+            target_path = resolve_target_path(name_path, base_target)
             target_obj = get_state_data(data, target_path)
             
             if target_obj is None:
-                # Try to see if it points to a parallel sibling (which is valid but tricky)
-                # For now, strict check:
-                errors.append(f"State '{display_name}', transition #{i+1}: Target '{target}' (resolved: {'/'.join(target_path)}) does not exist.")
+                errors.append(f"State '{display_name}', transition #{i+1}: Target '{base_target}' (resolved: {'/'.join(target_path)}) does not exist.")
+                continue # Cannot check forks if base is missing
+
+            # 2. If it's a Fork, validate the branches
+            if forks:
+                if 'states' not in target_obj:
+                    errors.append(f"State '{display_name}': Fork target '{base_target}' is not a composite state.")
+                else:
+                    for fork in forks:
+                        # Fork path is relative to the Base, NOT the current state
+                        # fork = "a/b" -> absolute check = target_path + ["a", "b"]
+                        fork_parts = fork.split('/')
+                        
+                        # We need to manually verify this path exists inside target_obj
+                        # We can use get_state_data by constructing the absolute path
+                        fork_abs_path = target_path + fork_parts
+                        fork_obj = get_state_data(data, fork_abs_path)
+                        
+                        if fork_obj is None:
+                            errors.append(f"State '{display_name}': Fork branch '{fork}' does not exist inside '{base_target}'.")
 
         # Recurse
         if 'states' in state_data:
@@ -79,8 +101,6 @@ def validate_model(data):
                 check_state(name_path + [child_name], child_data)
 
     # Start validation from root
-    root_wrapper = {'states': data.get('states', {}), 'initial': data.get('initial')}
-    # Root pseudo-check
     if 'initial' not in data:
         errors.append("Root model missing 'initial' state.")
     else:
@@ -144,7 +164,6 @@ def main():
             print(" -> statemachine.rs created.")
             
     except Exception as e:
-        # Catch-all for logic bugs in the generator (or uncaught validation issues)
         print(f"\nCRITICAL ERROR during generation: {e}")
         import traceback
         traceback.print_exc()
