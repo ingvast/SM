@@ -43,18 +43,14 @@ hooks:
     
 
 run: |
-  //println!("{}","Runn")
+  //println!("{}","Running root");
 exit: |
-  //println!("{}","Exxxxit")
+  println!("{}","Done");
 entry: |
-  //println!("{}","Entrrrry")
+  println!("{}","System Start");
 
 
 states:
-  done:
-    entry: |
-      p("Done".into());
-      finish(ctx);
 
   run:
     initial: a
@@ -159,5 +155,5 @@ states:
                   - test: ctx.counter == 14 || ctx.counter == 18
                     to: a
                   - test: ctx.counter == 24
-                    to: /done
+                    to: null
 

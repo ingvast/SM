@@ -14,18 +14,10 @@ class BuildError(Exception):
     pass
 
 def get_state_data(root_data, path_parts):
-    """
-    Navigates the data dictionary to find the state object at path_parts.
-    Returns None if not found.
-    """
     current = {'states': root_data.get('states', {}), 'initial': root_data.get('initial')}
-    
-    # Handle root logic
     if path_parts == ['root']:
         return root_data
-        
     start_idx = 1 if (path_parts and path_parts[0] == 'root') else 0
-    
     for part in path_parts[start_idx:]:
         if 'states' not in current or part not in current['states']:
             return None
@@ -33,19 +25,13 @@ def get_state_data(root_data, path_parts):
     return current
 
 def validate_model(data):
-    """
-    Performs a pre-flight check on the model to catch common errors.
-    """
     print("Validating model...")
     errors = []
     
-    # 1. Recursive check for states
     def check_state(name_path, state_data):
         display_name = "/" + "/".join(name_path[1:])
         
-        # Check Composite Validity
         if 'states' in state_data:
-            # Must have 'initial' unless parallel
             if 'initial' not in state_data and not state_data.get('parallel', False):
                 errors.append(f"State '{display_name}' is composite but missing 'initial' property.")
             elif 'initial' in state_data:
@@ -53,23 +39,23 @@ def validate_model(data):
                 if init not in state_data['states']:
                     errors.append(f"State '{display_name}' defines initial='{init}', but that child does not exist.")
 
-        # Check Transitions
         transitions = state_data.get('transitions', [])
         for i, t in enumerate(transitions):
-            # CHANGED: Validating 'to'
             if 'to' not in t:
                 errors.append(f"State '{display_name}', transition #{i+1}: Missing 'to'.")
                 continue
             
             raw_target = t['to']
             
-            # Skip decision validation for now (decisions are at root level)
+            # --- FIX: Allow Termination (null target) ---
+            if raw_target is None or raw_target == "null":
+                continue
+
             if raw_target in data.get('decisions', {}):
                 continue
 
             base_target, forks = parse_fork_target(raw_target)
             
-            # 1. Resolve the Base Target
             target_path = resolve_target_path(name_path, base_target)
             target_obj = get_state_data(data, target_path)
             
@@ -77,7 +63,6 @@ def validate_model(data):
                 errors.append(f"State '{display_name}', transition #{i+1}: Target '{base_target}' (resolved: {'/'.join(target_path)}) does not exist.")
                 continue 
 
-            # 2. If it's a Fork, validate the branches
             if forks:
                 if 'states' not in target_obj:
                     errors.append(f"State '{display_name}': Fork target '{base_target}' is not a composite state.")
@@ -86,16 +71,13 @@ def validate_model(data):
                         fork_parts = fork.split('/')
                         fork_abs_path = target_path + fork_parts
                         fork_obj = get_state_data(data, fork_abs_path)
-                        
                         if fork_obj is None:
                             errors.append(f"State '{display_name}': Fork branch '{fork}' does not exist inside '{base_target}'.")
 
-        # Recurse
         if 'states' in state_data:
             for child_name, child_data in state_data['states'].items():
                 check_state(name_path + [child_name], child_data)
 
-    # Start validation from root
     if 'initial' not in data:
         errors.append("Root model missing 'initial' state.")
     else:
@@ -127,21 +109,17 @@ def main():
     except yaml.YAMLError as e:
         sys.exit(f"YAML Syntax Error: {e}")
 
-    # Step 0: Validate
     validate_model(data)
 
-    # Extract decisions
     decisions = data.get('decisions', {})
 
     try:
-        # Step 1: Generate Visuals
         print(f"Generating Graphviz DOT...")
         dot_content = generate_dot(data, decisions)
         with open("statemachine.dot", "w") as f:
             f.write(dot_content)
         print(" -> statemachine.dot created.")
 
-        # Step 2: Generate Code
         if args.lang == 'c':
             from codegen.c_lang import CGenerator
             print("Generating C code...")

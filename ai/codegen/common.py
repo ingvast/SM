@@ -10,6 +10,8 @@ def get_graph_id(path):
     return safe_id
 
 def resolve_target_path(current_path, target_str):
+    if not target_str: return current_path # Safety for nulls
+
     # 1. Absolute Path
     if target_str.startswith("/"):
         parts = target_str.strip("/").split("/")
@@ -51,6 +53,10 @@ def resolve_state_data(root_data, path_parts):
     return current
 
 def parse_fork_target(target_str):
+    # --- FIX: Handle None input safely ---
+    if target_str is None:
+        return None, None
+        
     match = re.match(r'(.*)/\[(.*)\]', target_str)
     if match:
         base = match.group(1)
@@ -144,8 +150,14 @@ def generate_dot_recursive(name_path, data, node_lines, edge_lines, composite_id
         node_lines.append(f"{indent}{my_id} [label=\"{label}\", shape={shape}, style=\"{style}\", fillcolor=white];")
 
     for t in data.get('transitions', []):
-        # CHANGED: Use 'to' instead of 'transfer_to'
         target_str = t['to']
+        
+        # --- FIX: Skip drawing edge for null transitions ---
+        if target_str is None or target_str == "null":
+            # Optional: Draw an edge to a "STOP" node
+            # For now, just skip it to prevent graphviz errors
+            continue
+
         base_str, _ = parse_fork_target(target_str)
         
         is_decision = target_str in decisions
@@ -180,8 +192,10 @@ def generate_dot(root_data, decisions):
         dec_id = get_graph_id(['root', name])
         node_lines.append(f"    {dec_id} [label=\"?\", shape=diamond, style=filled, fillcolor=lightyellow];")
         for t in transitions:
-            # CHANGED: Use 'to'
-            base_str, _ = parse_fork_target(t['to'])
+            target_str = t['to']
+            if target_str is None: continue
+            
+            base_str, _ = parse_fork_target(target_str)
             target_path = resolve_target_path(['root', name], base_str) 
             target_id = get_graph_id(target_path)
             tgt_node = f"{target_id}_start" if target_id in composite_ids else target_id

@@ -13,6 +13,7 @@ pub struct Context {
     pub now: f64,
     pub state_timers: [f64; %d],
     pub transition_fired: bool,
+    pub terminated: bool,
     
     // Hierarchy Pointers (Option<fn>)
     %s
@@ -35,6 +36,7 @@ impl StateMachine {
             now: 0.0,
             state_timers: [0.0; %d],
             transition_fired: false,
+            terminated: false,
             
             // Init Hierarchy Pointers
             %s
@@ -55,18 +57,28 @@ impl StateMachine {
     }
 
     pub fn tick(&mut self) {
-        // Reset flag at start of tick
         self.ctx.transition_fired = false;
         
         if let Some(run_fn) = self.root {
             run_fn(&mut self.ctx);
+            
+            // Handle Termination from 'to: null'
+            if self.ctx.terminated {
+                self.root = None;
+            }
         }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.root.is_some()
     }
 
     pub fn get_state_str(&self) -> String {
         let mut buffer = String::new();
         if self.root.is_some() {
              inspect_root(&self.ctx, &mut buffer);
+        } else {
+             buffer.push_str("FINISHED");
         }
         buffer
     }
@@ -219,7 +231,6 @@ class RustGenerator:
         return "state_" + flatten_name(path, "_") + suffix
 
     def generate(self):
-        # CHANGED: Read 'entry', 'run', 'exit' from YAML root
         root_data = {
             'initial': self.data['initial'], 
             'states': self.data['states'],
@@ -253,7 +264,6 @@ class RustGenerator:
     def emit_transition_logic(self, name_path, t, indent_level=1):
         indent = "    " * indent_level
         code = ""
-        # CHANGED: Use 'to'
         raw_target = t['to']
         
         test_val = t.get('test', True)
@@ -265,10 +275,20 @@ class RustGenerator:
         test_cond = re.sub(r'IN_STATE\(([\w_]+)\)', r'ctx.in_state_\1()', test_cond)
 
         code += f"{indent}if {test_cond} {{\n"
-        
         code += f"{indent}    ctx.transition_fired = true;\n"
 
-        if raw_target in self.decisions:
+        if raw_target is None or raw_target == "null" or raw_target == "":
+            # TERMINATION LOGIC
+            # 1. Recursive exit to Root
+            exit_funcs = get_exit_sequence(name_path, ['root'], self._fmt_func)
+            code += "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
+            # 2. Root exit
+            code += f"{indent}    state_root_exit(ctx);\n"
+            # 3. Signal Termination
+            code += f"{indent}    ctx.terminated = true;\n"
+            code += f"{indent}    return;\n"
+
+        elif raw_target in self.decisions:
             decision_rules = self.decisions[raw_target]
             for rule in decision_rules:
                 code += self.emit_transition_logic(name_path, rule, indent_level + 1)
@@ -276,6 +296,7 @@ class RustGenerator:
             base_target, forks = parse_fork_target(raw_target)
             target_path = resolve_target_path(name_path, base_target)
 
+            # IMPLICIT PARALLEL DETECTION
             if forks is None:
                 parallel_ancestor_idx = -1
                 for i in range(len(target_path)):
@@ -293,9 +314,11 @@ class RustGenerator:
                     forks = [fork_str]
                     base_target = "/" + "/".join(base_path_list[1:])
 
+            # EXIT
             exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
             code += "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
 
+            # ENTRY
             if forks is None:
                 entry_funcs = get_entry_sequence(name_path, target_path, self._fmt_entry)
                 code += "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
