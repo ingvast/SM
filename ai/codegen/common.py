@@ -10,29 +10,42 @@ def get_graph_id(path):
     return safe_id
 
 def resolve_target_path(current_path, target_str):
+    # 1. Absolute Path
     if target_str.startswith("/"):
         parts = target_str.strip("/").split("/")
         if parts[0] != "root": return ["root"] + parts
         return parts
-    if target_str.startswith("root/"): return target_str.split("/")
+    
+    # 2. Legacy Absolute
+    if target_str.startswith("root/"): 
+        return target_str.split("/")
+    
+    # 3. Parent Relative (../)
     if target_str.startswith("../"):
         parent_scope = current_path[:-2]
         clean_target = target_str.replace("../", "")
         return parent_scope + clean_target.split("/")
     
+    # 4. NEW: Current/Child Relative (./)
+    if target_str.startswith("./"):
+        # Explicit self-reference "transfer_to: ." or "transfer_to: ./"
+        if target_str == "./" or target_str == ".":
+            return current_path
+            
+        # Child reference "transfer_to: ./child"
+        clean_target = target_str[2:] # Remove "./"
+        return current_path + clean_target.split("/")
+    
+    # 5. Sibling (Default)
     parent_scope = current_path[:-1]
     return parent_scope + target_str.split("/")
 
-# --- NEW: Helper to find state data in the schema ---
+# --- STATE DATA HELPER ---
 def resolve_state_data(root_data, path_parts):
-    """
-    Navigates the data dictionary to find the state object at path_parts.
-    """
-    current = {'states': root_data['states'], 'initial': root_data['initial']}
-    # Handle root logic
+    current = {'states': root_data.get('states', {}), 'initial': root_data.get('initial')}
     if path_parts == ['root']:
         return root_data
-        
+    
     start_idx = 1 if (path_parts and path_parts[0] == 'root') else 0
     
     for part in path_parts[start_idx:]:
@@ -41,23 +54,17 @@ def resolve_state_data(root_data, path_parts):
         current = current['states'][part]
     return current
 
-# --- NEW: Helper to parse Fork Syntax ---
+# --- FORK PARSER ---
 def parse_fork_target(target_str):
-    """
-    Input:  "/run/g/[a/b,c/d]"
-    Output: ("/run/g", ["a/b", "c/d"])
-    Input:  "/run/simple"
-    Output: ("/run/simple", None)
-    """
     match = re.match(r'(.*)/\[(.*)\]', target_str)
     if match:
         base = match.group(1)
         content = match.group(2)
-        # Split by comma, strip whitespace
         forks = [x.strip() for x in content.split(',')]
         return base, forks
     return target_str, None
 
+# --- SEQUENCE CALCULATORS ---
 def get_lca_index(source_path, target_path):
     lca_index = 0
     min_len = min(len(source_path), len(target_path))
@@ -91,7 +98,7 @@ def get_entry_sequence(source_path, target_path, func_formatter):
         entries.append(func_name)
     return entries
 
-# --- VISUALIZATION (Unchanged) ---
+# --- VISUALIZATION ---
 def find_composites(name_path, data, result_set):
     my_id = get_graph_id(name_path)
     if 'states' in data:
@@ -144,8 +151,6 @@ def generate_dot_recursive(name_path, data, node_lines, edge_lines, composite_id
 
     for t in data.get('transitions', []):
         target_str = t['transfer_to']
-        # --- FIX VISUALIZATION FOR FORKS ---
-        # If the visualization sees a fork, just point to the base for now
         base_str, _ = parse_fork_target(target_str)
         
         is_decision = target_str in decisions
