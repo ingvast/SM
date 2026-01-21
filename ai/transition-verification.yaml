@@ -145,7 +145,7 @@ states:
                   - test: ctx.counter == 21 
                     transfer_to: /run/a
                   - test: ctx.counter == 23 
-                    transfer_to: /done
+                    transfer_to: /run/g/b/c
           b:
             initial: b
             states:
@@ -158,4 +158,6 @@ states:
                 transitions:
                   - test: ctx.counter == 14 || ctx.counter == 18
                     transfer_to: a
+                  - test: ctx.counter == 24
+                    transfer_to: /done
 

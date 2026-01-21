@@ -12,6 +12,7 @@ HEADER = """
 pub struct Context {
     pub now: f64,
     pub state_timers: [f64; %d],
+    pub transition_fired: bool, // <--- NEW: Synchronization Flag
     
     // Hierarchy Pointers (Option<fn>)
     %s
@@ -33,6 +34,7 @@ impl StateMachine {
         let ctx = Context {
             now: 0.0,
             state_timers: [0.0; %d],
+            transition_fired: false,
             
             // Init Hierarchy Pointers
             %s
@@ -53,6 +55,9 @@ impl StateMachine {
     }
 
     pub fn tick(&mut self) {
+        // Reset flag at start of tick
+        self.ctx.transition_fired = false;
+        
         if let Some(run_fn) = self.root {
             run_fn(&mut self.ctx);
         }
@@ -80,8 +85,6 @@ FUNC_PREAMBLE = """
     let state_full_name = "{display_name}";
     let time = ctx.now - ctx.state_timers[{state_id}];
 """
-
-# FIX: Added {entry} back into the _start function for all templates
 
 LEAF_TEMPLATE = """
 fn state_{c_name}_start(ctx: &mut Context) {{
@@ -185,7 +188,7 @@ fn state_{c_name}_run(ctx: &mut Context) {{
     {transitions}
     {run}
     
-    // Safety check
+    // Safety: Stop if we are exited OR if any transition fired globally
     {safety_check}
 
     {parallel_ticks}
@@ -256,17 +259,18 @@ class RustGenerator:
         test_cond = re.sub(r'IN_STATE\(([\w_]+)\)', r'ctx.in_state_\1()', test_cond)
 
         code += f"{indent}if {test_cond} {{\n"
+        
+        # --- NEW: Set Global Transition Flag ---
+        code += f"{indent}    ctx.transition_fired = true;\n"
 
         if raw_target in self.decisions:
             decision_rules = self.decisions[raw_target]
             for rule in decision_rules:
                 code += self.emit_transition_logic(name_path, rule, indent_level + 1)
         else:
-            # 1. Parse Fork
             base_target, forks = parse_fork_target(raw_target)
             target_path = resolve_target_path(name_path, base_target)
 
-            # IMPLICIT PARALLEL DETECTION
             if forks is None:
                 parallel_ancestor_idx = -1
                 for i in range(len(target_path)):
@@ -284,11 +288,9 @@ class RustGenerator:
                     forks = [fork_str]
                     base_target = "/" + "/".join(base_path_list[1:])
 
-            # 2. Exit Logic
             exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
             code += "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
 
-            # 3. Entry Logic
             if forks is None:
                 entry_funcs = get_entry_sequence(name_path, target_path, self._fmt_entry)
                 code += "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
@@ -377,9 +379,9 @@ class RustGenerator:
             if is_composite:
                 if is_parallel:
                     if parent_run_ptr:
-                        safety_check = f"if !ctx.in_state_{my_c_name}() {{ return; }}"
+                        safety_check = f"if !ctx.in_state_{my_c_name}() || ctx.transition_fired {{ return; }}"
                     else:
-                        safety_check = "" 
+                        safety_check = f"if ctx.transition_fired {{ return; }}"
 
                     p_entries, p_exits, p_ticks = "", "", ""
                     for child_name, child_data in data['states'].items():
@@ -396,7 +398,10 @@ class RustGenerator:
 
                         p_entries += f"    state_{child_c_name}_entry(ctx);\n"
                         p_exits += f"    if let Some(f) = ctx.{region_exit_ptr} {{ f(ctx); }}\n"
+                        
                         p_ticks += f"    state_{child_c_name}_run(ctx);\n"
+                        
+                        # --- NEW: Check flag after every child tick ---
                         if safety_check:
                             p_ticks += f"    {safety_check}\n"
                         
