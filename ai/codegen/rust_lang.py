@@ -12,7 +12,7 @@ HEADER = """
 pub struct Context {
     pub now: f64,
     pub state_timers: [f64; %d],
-    pub transition_fired: bool, // <--- NEW: Synchronization Flag
+    pub transition_fired: bool,
     
     // Hierarchy Pointers (Option<fn>)
     %s
@@ -219,9 +219,14 @@ class RustGenerator:
         return "state_" + flatten_name(path, "_") + suffix
 
     def generate(self):
+        # CHANGED: Read 'entry', 'run', 'exit' from YAML root
         root_data = {
-            'initial': self.data['initial'], 'states': self.data['states'],
-            'history': False, 'entry': "// Root Entry", 'run': "// Root Run", 'exit': "// Root Exit"
+            'initial': self.data['initial'], 
+            'states': self.data['states'],
+            'history': False, 
+            'entry': self.data.get('entry', '// Root Entry'), 
+            'run': self.data.get('run', '// Root Run'), 
+            'exit': self.data.get('exit', '// Root Exit')
         }
         
         self.recurse(['root'], root_data, None)
@@ -248,7 +253,8 @@ class RustGenerator:
     def emit_transition_logic(self, name_path, t, indent_level=1):
         indent = "    " * indent_level
         code = ""
-        raw_target = t['transfer_to']
+        # CHANGED: Use 'to'
+        raw_target = t['to']
         
         test_val = t.get('test', True)
         if test_val is True: test_cond = "true"
@@ -260,7 +266,6 @@ class RustGenerator:
 
         code += f"{indent}if {test_cond} {{\n"
         
-        # --- NEW: Set Global Transition Flag ---
         code += f"{indent}    ctx.transition_fired = true;\n"
 
         if raw_target in self.decisions:
@@ -398,10 +403,7 @@ class RustGenerator:
 
                         p_entries += f"    state_{child_c_name}_entry(ctx);\n"
                         p_exits += f"    if let Some(f) = ctx.{region_exit_ptr} {{ f(ctx); }}\n"
-                        
                         p_ticks += f"    state_{child_c_name}_run(ctx);\n"
-                        
-                        # --- NEW: Check flag after every child tick ---
                         if safety_check:
                             p_ticks += f"    {safety_check}\n"
                         

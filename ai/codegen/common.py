@@ -26,21 +26,17 @@ def resolve_target_path(current_path, target_str):
         clean_target = target_str.replace("../", "")
         return parent_scope + clean_target.split("/")
     
-    # 4. NEW: Current/Child Relative (./)
+    # 4. Current/Child Relative (./)
     if target_str.startswith("./"):
-        # Explicit self-reference "transfer_to: ." or "transfer_to: ./"
         if target_str == "./" or target_str == ".":
             return current_path
-            
-        # Child reference "transfer_to: ./child"
-        clean_target = target_str[2:] # Remove "./"
+        clean_target = target_str[2:] 
         return current_path + clean_target.split("/")
     
     # 5. Sibling (Default)
     parent_scope = current_path[:-1]
     return parent_scope + target_str.split("/")
 
-# --- STATE DATA HELPER ---
 def resolve_state_data(root_data, path_parts):
     current = {'states': root_data.get('states', {}), 'initial': root_data.get('initial')}
     if path_parts == ['root']:
@@ -54,7 +50,6 @@ def resolve_state_data(root_data, path_parts):
         current = current['states'][part]
     return current
 
-# --- FORK PARSER ---
 def parse_fork_target(target_str):
     match = re.match(r'(.*)/\[(.*)\]', target_str)
     if match:
@@ -64,7 +59,6 @@ def parse_fork_target(target_str):
         return base, forks
     return target_str, None
 
-# --- SEQUENCE CALCULATORS ---
 def get_lca_index(source_path, target_path):
     lca_index = 0
     min_len = min(len(source_path), len(target_path))
@@ -150,7 +144,8 @@ def generate_dot_recursive(name_path, data, node_lines, edge_lines, composite_id
         node_lines.append(f"{indent}{my_id} [label=\"{label}\", shape={shape}, style=\"{style}\", fillcolor=white];")
 
     for t in data.get('transitions', []):
-        target_str = t['transfer_to']
+        # CHANGED: Use 'to' instead of 'transfer_to'
+        target_str = t['to']
         base_str, _ = parse_fork_target(target_str)
         
         is_decision = target_str in decisions
@@ -185,7 +180,8 @@ def generate_dot(root_data, decisions):
         dec_id = get_graph_id(['root', name])
         node_lines.append(f"    {dec_id} [label=\"?\", shape=diamond, style=filled, fillcolor=lightyellow];")
         for t in transitions:
-            base_str, _ = parse_fork_target(t['transfer_to'])
+            # CHANGED: Use 'to'
+            base_str, _ = parse_fork_target(t['to'])
             target_path = resolve_target_path(['root', name], base_str) 
             target_id = get_graph_id(target_path)
             tgt_node = f"{target_id}_start" if target_id in composite_ids else target_id

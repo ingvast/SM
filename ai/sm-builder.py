@@ -56,17 +56,17 @@ def validate_model(data):
         # Check Transitions
         transitions = state_data.get('transitions', [])
         for i, t in enumerate(transitions):
-            if 'transfer_to' not in t:
-                errors.append(f"State '{display_name}', transition #{i+1}: Missing 'transfer_to'.")
+            # CHANGED: Validating 'to'
+            if 'to' not in t:
+                errors.append(f"State '{display_name}', transition #{i+1}: Missing 'to'.")
                 continue
             
-            raw_target = t['transfer_to']
+            raw_target = t['to']
             
             # Skip decision validation for now (decisions are at root level)
             if raw_target in data.get('decisions', {}):
                 continue
 
-            # --- NEW: Handle Fork Syntax ---
             base_target, forks = parse_fork_target(raw_target)
             
             # 1. Resolve the Base Target
@@ -75,7 +75,7 @@ def validate_model(data):
             
             if target_obj is None:
                 errors.append(f"State '{display_name}', transition #{i+1}: Target '{base_target}' (resolved: {'/'.join(target_path)}) does not exist.")
-                continue # Cannot check forks if base is missing
+                continue 
 
             # 2. If it's a Fork, validate the branches
             if forks:
@@ -83,12 +83,7 @@ def validate_model(data):
                     errors.append(f"State '{display_name}': Fork target '{base_target}' is not a composite state.")
                 else:
                     for fork in forks:
-                        # Fork path is relative to the Base, NOT the current state
-                        # fork = "a/b" -> absolute check = target_path + ["a", "b"]
                         fork_parts = fork.split('/')
-                        
-                        # We need to manually verify this path exists inside target_obj
-                        # We can use get_state_data by constructing the absolute path
                         fork_abs_path = target_path + fork_parts
                         fork_obj = get_state_data(data, fork_abs_path)
                         
