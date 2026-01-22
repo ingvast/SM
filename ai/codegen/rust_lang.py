@@ -52,17 +52,16 @@ impl StateMachine {
         
         // Start Machine
         state_root_entry(&mut sm.ctx);
-        sm.root = Some(state_root_run);
+        sm.root = Some(state_root_do);
         sm
     }
 
     pub fn tick(&mut self) {
         self.ctx.transition_fired = false;
         
-        if let Some(run_fn) = self.root {
-            run_fn(&mut self.ctx);
+        if let Some(do_fn) = self.root {
+            do_fn(&mut self.ctx);
             
-            // Handle Termination from 'to: null'
             if self.ctx.terminated {
                 self.root = None;
             }
@@ -118,11 +117,11 @@ fn state_{c_name}_exit(ctx: &mut Context) {{
     {clear_parent}
 }}
 
-fn state_{c_name}_run(ctx: &mut Context) {{
+fn state_{c_name}_do(ctx: &mut Context) {{
     {preamble}
-    {hook_run}
+    {hook_do}
     {transitions}
-    {run}
+    {do}
 }}
 """
 
@@ -157,15 +156,15 @@ fn state_{c_name}_exit(ctx: &mut Context) {{
     {clear_parent}
 }}
 
-fn state_{c_name}_run(ctx: &mut Context) {{
+fn state_{c_name}_do(ctx: &mut Context) {{
     {preamble}
-    {hook_run}
+    {hook_do}
     {transitions}
-    {run}
+    {do}
     
     // Tick active child
-    if let Some(child_run) = ctx.{self_ptr} {{
-        child_run(ctx);
+    if let Some(child_do) = ctx.{self_ptr} {{
+        child_do(ctx);
     }}
 }}
 """
@@ -194,11 +193,11 @@ fn state_{c_name}_exit(ctx: &mut Context) {{
     {clear_parent}
 }}
 
-fn state_{c_name}_run(ctx: &mut Context) {{
+fn state_{c_name}_do(ctx: &mut Context) {{
     {preamble}
-    {hook_run}
+    {hook_do}
     {transitions}
-    {run}
+    {do}
     
     // Safety: Stop if we are exited OR if any transition fired globally
     {safety_check}
@@ -221,7 +220,13 @@ class RustGenerator:
         self.outputs = {'context_ptrs': [], 'context_init': [], 'functions': [], 'impls': []}
         self.inspect_list = []
         self.decisions = data.get('decisions', {})
+        
+        # CHANGED: Ensure we read hooks correctly even if nested or root
         self.hooks = data.get('hooks', {})
+        # Fallback if user put them at root level (which is nicer)
+        if 'transition' not in self.hooks and 'transition' in data:
+             self.hooks['transition'] = data['transition']
+             
         self.includes = data.get('includes', '')
 
     def _fmt_func(self, path):
@@ -236,7 +241,7 @@ class RustGenerator:
             'states': self.data['states'],
             'history': False, 
             'entry': self.data.get('entry', '// Root Entry'), 
-            'run': self.data.get('run', '// Root Run'), 
+            'do': self.data.get('do', '// Root Do'), 
             'exit': self.data.get('exit', '// Root Exit')
         }
         
@@ -264,9 +269,9 @@ class RustGenerator:
     def emit_transition_logic(self, name_path, t, indent_level=1):
         indent = "    " * indent_level
         code = ""
-        raw_target = t['to']
+        raw_target = t.get('to')
         
-        test_val = t.get('test', True)
+        test_val = t.get('guard', True)
         if test_val is True: test_cond = "true"
         elif test_val is False: test_cond = "false"
         else: test_cond = str(test_val)
@@ -275,16 +280,54 @@ class RustGenerator:
         test_cond = re.sub(r'IN_STATE\(([\w_]+)\)', r'ctx.in_state_\1()', test_cond)
 
         code += f"{indent}if {test_cond} {{\n"
-        code += f"{indent}    ctx.transition_fired = true;\n"
-
+        
+        # --- NEW: TRANSITION HOOK LOGIC ---
+        # 1. Determine Source Name
+        src_str = "/" + "/".join(name_path[1:])
+        
+        # 2. Determine Target Name (before generating logic code)
+        dst_str = "???"
+        is_termination = False
+        
         if raw_target is None or raw_target == "null" or raw_target == "":
-            # TERMINATION LOGIC
-            # 1. Recursive exit to Root
+            dst_str = "Termination"
+            is_termination = True
+        elif raw_target in self.decisions:
+            dst_str = f"Decision({raw_target})" 
+            # Note: For decisions, we don't trigger the hook HERE.
+            # We recurse, and the hook triggers at the leaf of the decision tree.
+        else:
+            base_target, forks = parse_fork_target(raw_target)
+            target_path = resolve_target_path(name_path, base_target)
+            
+            # If forks, append them for clarity in logging
+            if forks:
+                dst_str = "/" + "/".join(target_path[1:]) + str(forks)
+            else:
+                dst_str = "/" + "/".join(target_path[1:])
+
+        # 3. Inject Hook (Only if not a decision node, as decisions will recurse)
+        hook_code = self.hooks.get('transition', '')
+        if raw_target not in self.decisions:
+             code += f'{indent}    let t_src = "{src_str}";\n'
+             code += f'{indent}    let t_dst = "{dst_str}";\n'
+             if hook_code:
+                 formatted_hook = "\n".join([f"{indent}    {line}" for line in hook_code.splitlines()])
+                 code += formatted_hook + "\n"
+
+        code += f"{indent}    ctx.transition_fired = true;\n"
+        
+        # --- Action Code ---
+        action_code = t.get('action')
+        if action_code:
+             formatted_action = "\n".join([f"{indent}    {line}" for line in action_code.splitlines()])
+             code += formatted_action + "\n"
+
+        # --- Transition Logic ---
+        if is_termination:
             exit_funcs = get_exit_sequence(name_path, ['root'], self._fmt_func)
             code += "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
-            # 2. Root exit
             code += f"{indent}    state_root_exit(ctx);\n"
-            # 3. Signal Termination
             code += f"{indent}    ctx.terminated = true;\n"
             code += f"{indent}    return;\n"
 
@@ -296,13 +339,12 @@ class RustGenerator:
             base_target, forks = parse_fork_target(raw_target)
             target_path = resolve_target_path(name_path, base_target)
 
-            # IMPLICIT PARALLEL DETECTION
             if forks is None:
                 parallel_ancestor_idx = -1
                 for i in range(len(target_path)):
                     partial_path = target_path[:i+1]
                     s_data = resolve_state_data(self.data, partial_path)
-                    if s_data and s_data.get('parallel', False):
+                    if s_data and s_data.get('orthogonal', False):
                         parallel_ancestor_idx = i
                         break
                 
@@ -314,11 +356,9 @@ class RustGenerator:
                     forks = [fork_str]
                     base_target = "/" + "/".join(base_path_list[1:])
 
-            # EXIT
             exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
             code += "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
 
-            # ENTRY
             if forks is None:
                 entry_funcs = get_entry_sequence(name_path, target_path, self._fmt_entry)
                 code += "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
@@ -373,7 +413,7 @@ class RustGenerator:
             if parent_run_ptr:
                 method = f"""
         pub fn in_state_{my_c_name}(&self) -> bool {{
-            self.{parent_run_ptr}.map(|f| f as usize) == Some(state_{my_c_name}_run as usize)
+            self.{parent_run_ptr}.map(|f| f as usize) == Some(state_{my_c_name}_do as usize)
         }}"""
                 self.outputs['impls'].append(method)
 
@@ -381,7 +421,7 @@ class RustGenerator:
             clear_parent_code = ""
             
             if parent_run_ptr:
-                set_parent_code += f"ctx.{parent_run_ptr} = Some(state_{my_c_name}_run);\n    "
+                set_parent_code += f"ctx.{parent_run_ptr} = Some(state_{my_c_name}_do);\n    "
                 set_parent_code += f"ctx.{parent_exit_ptr} = Some(state_{my_c_name}_exit);"
                 
                 if parent_hist_ptr:
@@ -398,10 +438,10 @@ class RustGenerator:
                     raise Exception(f"Transition #{i+1} logic error: {e}")
 
             is_composite = 'states' in data
-            is_parallel = data.get('parallel', False)
+            is_parallel = data.get('orthogonal', False)
             
             h_entry = self.hooks.get('entry', '')
-            h_run = self.hooks.get('run', '')
+            h_do = self.hooks.get('do', '')
             h_exit = self.hooks.get('exit', '')
 
             if is_composite:
@@ -426,7 +466,7 @@ class RustGenerator:
 
                         p_entries += f"    state_{child_c_name}_entry(ctx);\n"
                         p_exits += f"    if let Some(f) = ctx.{region_exit_ptr} {{ f(ctx); }}\n"
-                        p_ticks += f"    state_{child_c_name}_run(ctx);\n"
+                        p_ticks += f"    state_{child_c_name}_do(ctx);\n"
                         if safety_check:
                             p_ticks += f"    {safety_check}\n"
                         
@@ -434,8 +474,8 @@ class RustGenerator:
 
                     func_body = COMPOSITE_AND_TEMPLATE.format(
                         c_name=my_c_name, state_id=my_id_num, preamble=preamble,
-                        hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
-                        entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
+                        hook_entry=h_entry, hook_do=h_do, hook_exit=h_exit,
+                        entry=data.get('entry', ''), exit=data.get('exit', ''), do=data.get('do', ''),
                         transitions=trans_code, 
                         set_parent=set_parent_code, clear_parent=clear_parent_code,
                         parallel_entries=p_entries, parallel_exits=p_exits, parallel_ticks=p_ticks,
@@ -460,8 +500,8 @@ class RustGenerator:
 
                     func_body = COMPOSITE_OR_TEMPLATE.format(
                         c_name=my_c_name, state_id=my_id_num, preamble=preamble,
-                        hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
-                        entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
+                        hook_entry=h_entry, hook_do=h_do, hook_exit=h_exit,
+                        entry=data.get('entry', ''), exit=data.get('exit', ''), do=data.get('do', ''),
                         transitions=trans_code, history=hist_bool,
                         self_ptr=my_ptr, self_exit_ptr=my_exit_ptr, self_hist_ptr=my_hist,
                         initial_target=init_target, 
@@ -476,8 +516,8 @@ class RustGenerator:
             else:
                 func_body = LEAF_TEMPLATE.format(
                     c_name=my_c_name, state_id=my_id_num, preamble=preamble,
-                    hook_entry=h_entry, hook_run=h_run, hook_exit=h_exit,
-                    entry=data.get('entry', ''), exit=data.get('exit', ''), run=data.get('run', ''),
+                    hook_entry=h_entry, hook_do=h_do, hook_exit=h_exit,
+                    entry=data.get('entry', ''), exit=data.get('exit', ''), do=data.get('do', ''),
                     transitions=trans_code, 
                     set_parent=set_parent_code, clear_parent=clear_parent_code
                 )
@@ -495,7 +535,7 @@ class RustGenerator:
 
         is_composite = 'states' in data
         if is_composite:
-            if data.get('parallel', False):
+            if data.get('orthogonal', False):
                 content += 'buf.push_str("/[");\n'
                 children = list(data['states'].items())
                 for i, (child_name, child_data) in enumerate(children):
@@ -513,7 +553,7 @@ class RustGenerator:
                 for child_name, child_data in data['states'].items():
                     c_name = flatten_name(name_path + [child_name], "_")
                     else_txt = "else " if not first else ""
-                    content += f"    {else_txt}if ctx.{my_ptr}.map(|f| f as usize) == Some(state_{c_name}_run as usize) {{\n"
+                    content += f"    {else_txt}if ctx.{my_ptr}.map(|f| f as usize) == Some(state_{c_name}_do as usize) {{\n"
                     content += f'        buf.push_str("/");\n'
                     content += f"        inspect_{c_name}(ctx, buf);\n"
                     content += "    }\n"

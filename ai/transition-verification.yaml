@@ -1,9 +1,9 @@
-# Idea is to go thru different kinds of transitions.
+# udea is to go thru different kinds of transitions.
 # * In the plane
 # * Up.
 # * Down
 # * Into a leg with history
-# * Into a parallel state
+# * Into a orhtogoanl state
 # From a state with internal states
 
 # main should count up a counter each time it runs a tick.
@@ -38,13 +38,13 @@ hooks:
     println!("{:02}: Exit: {}", ctx.counter, state_full_name.to_string() );
     
 
-  run: |
+  do: |
     println!("{:02}: Running: {}", ctx.counter, state_full_name.to_string() );
     
 
-run: |
+do: |
   //println!("{}","Running root");
-exit: |
+uxit: |
   println!("{}","Done");
 entry: |
   println!("{}","System Start");
@@ -55,50 +55,50 @@ states:
   run:
     initial: a
     transitions:
-      - test: ctx.counter == 8
+      - guard: ctx.counter == 8
         to: /run/d
-      - test: ctx.counter == 19
+      - guard: ctx.counter == 19
         to: /run/a
         
 
     states:
       a:
         transitions:
-          - test: ctx.counter == 1
+          - guard: ctx.counter == 1
             to: b
-          - test: ctx.counter == 3
+          - guard: ctx.counter == 3
             to: /run/c
-          - test: ctx.counter == 5
+          - guard: ctx.counter == 5
             to: /run/c/d
-          - test: ctx.counter == 11
+          - guard: ctx.counter == 11
             to: /run/d
-          - test: ctx.counter == 16
+          - guard: ctx.counter == 16
             to: /run/g
-          - test: ctx.counter == 20
+          - guard: ctx.counter == 20
             to: /run/g/[a/b,b/a]
-          - test: ctx.counter == 22
+          - guard: ctx.counter == 22
             to: /run/g/a/b
 
 
       b:
         transitions:
-          - test: ctx.counter == 2 
+          - guard: ctx.counter == 2 
             to: a
 
       c:
         transitions:
-          - test: false
+          - guard: false
             to: a
         initial: d
         states:
 
           d:
             transitions:
-              - test: ctx.counter == 4
+              - guard: ctx.counter == 4
                 to: /run
-              - test: ctx.counter == 6
+              - guard: ctx.counter == 6
                 to: /run/c/d
-              - test: ctx.counter == 7
+              - guard: ctx.counter == 7
                 to: /run/c/e
 
           e:
@@ -106,7 +106,7 @@ states:
             states:
               f:
                 transitions:
-                  - test: false
+                  - guard: false
                     to: /run/a
       d:
         history: true
@@ -115,32 +115,32 @@ states:
         states:
           a:
             transitions:
-              - test: ctx.counter == 09
+              - guard: ctx.counter == 09
                 to: b
           b:
             transitions:
-              - test: ctx.counter == 10
+              - guard: ctx.counter == 10
                 to: /run/a
-              - test: ctx.counter == 12
+              - guard: ctx.counter == 12
                 to: /run/g
 
       g:
-        parallel: true
+        orthogonal: true
         states:
           a:
             initial: a
             states:
               a:
                 transitions:
-                  - test: ctx.counter == 14 || ctx.counter == 18
+                  - guard: ctx.counter == 14 || ctx.counter == 18
                     to: b
               b:  
                 transitions:
-                  - test: ctx.counter == 15 
+                  - guard: ctx.counter == 15 
                     to: /run/a
-                  - test: ctx.counter == 21 
+                  - guard: ctx.counter == 21 
                     to: /run/a
-                  - test: ctx.counter == 23 
+                  - guard: ctx.counter == 23 
                     to: /run/g/b/c
           b:
             initial: b
@@ -148,12 +148,12 @@ states:
               a: { }
               b:
                 transitions:
-                  - test: ctx.counter == 13 || ctx.counter == 17
+                  - guard: ctx.counter == 13 || ctx.counter == 17
                     to: c
               c: 
                 transitions:
-                  - test: ctx.counter == 14 || ctx.counter == 18
+                  - guard: ctx.counter == 14 || ctx.counter == 18
                     to: a
-                  - test: ctx.counter == 24
+                  - guard: ctx.counter == 24
                     to: null
 

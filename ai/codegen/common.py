@@ -10,7 +10,7 @@ def get_graph_id(path):
     return safe_id
 
 def resolve_target_path(current_path, target_str):
-    if not target_str: return current_path # Safety for nulls
+    if not target_str: return current_path 
 
     # 1. Absolute Path
     if target_str.startswith("/"):
@@ -53,7 +53,6 @@ def resolve_state_data(root_data, path_parts):
     return current
 
 def parse_fork_target(target_str):
-    # --- FIX: Handle None input safely ---
     if target_str is None:
         return None, None
         
@@ -115,7 +114,8 @@ def generate_dot_recursive(name_path, data, node_lines, edge_lines, composite_id
         node_lines.append(f"{indent}subgraph cluster_{my_id} {{")
         node_lines.append(f"{indent}    label = \"{name_path[-1]}\";")
         
-        if data.get('parallel', False):
+        # CHANGED: 'parallel' -> 'orthogonal'
+        if data.get('orthogonal', False):
              node_lines.append(f"{indent}    style=dashed; color=black; penwidth=1.5; node [style=filled, fillcolor=white];")
              node_lines.append(f"{indent}    {my_id}_start [shape=point, width=0.15];")
              for child_name, child_data in data['states'].items():
@@ -150,12 +150,10 @@ def generate_dot_recursive(name_path, data, node_lines, edge_lines, composite_id
         node_lines.append(f"{indent}{my_id} [label=\"{label}\", shape={shape}, style=\"{style}\", fillcolor=white];")
 
     for t in data.get('transitions', []):
-        target_str = t['to']
+        target_str = t.get('to')
         
-        # --- FIX: Skip drawing edge for null transitions ---
         if target_str is None or target_str == "null":
-            # Optional: Draw an edge to a "STOP" node
-            # For now, just skip it to prevent graphviz errors
+            # Termination node visualization could go here
             continue
 
         base_str, _ = parse_fork_target(target_str)
@@ -175,8 +173,22 @@ def generate_dot_recursive(name_path, data, node_lines, edge_lines, composite_id
             lhead = f"lhead=cluster_{target_id}" if target_id in composite_ids else ""
 
         attrs = [x for x in [ltail, lhead] if x]
-        raw_test = t.get('test', '')
-        safe_label = str(raw_test).replace('"', '\\"')
+        
+        # CHANGED: Visualizing [Guard] / Action
+        raw_guard = t.get('guard', '')
+        raw_action = t.get('action', '')
+        
+        label_parts = []
+        if raw_guard and raw_guard != True:
+            label_parts.append(f"[{raw_guard}]")
+        if raw_action:
+            # Show abbreviated action if too long
+            act_text = str(raw_action).strip().replace('\n', '; ')
+            if len(act_text) > 15: act_text = act_text[:12] + "..."
+            label_parts.append(f"/ {act_text}")
+            
+        safe_label = " ".join(label_parts).replace('"', '\\"')
+        
         attrs.append(f'label="{safe_label}"')
         attrs.append('fontsize=10')
         edge_lines.append(f"{src} -> {tgt} [{', '.join(attrs)}];")
@@ -192,7 +204,7 @@ def generate_dot(root_data, decisions):
         dec_id = get_graph_id(['root', name])
         node_lines.append(f"    {dec_id} [label=\"?\", shape=diamond, style=filled, fillcolor=lightyellow];")
         for t in transitions:
-            target_str = t['to']
+            target_str = t.get('to')
             if target_str is None: continue
             
             base_str, _ = parse_fork_target(target_str)
@@ -200,7 +212,11 @@ def generate_dot(root_data, decisions):
             target_id = get_graph_id(target_path)
             tgt_node = f"{target_id}_start" if target_id in composite_ids else target_id
             lhead = f"lhead=cluster_{target_id}" if target_id in composite_ids else ""
-            lbl = str(t.get('test','')).replace('"', '\\"')
+            
+            # Label logic for decisions
+            raw_guard = t.get('guard', '')
+            lbl = str(raw_guard).replace('"', '\\"')
+            
             attr = f'label="{lbl}", fontsize=10'
             if lhead: attr += f", {lhead}"
             edge_lines.append(f"    {dec_id} -> {tgt_node} [{attr}];")

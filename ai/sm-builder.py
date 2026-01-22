@@ -32,7 +32,8 @@ def validate_model(data):
         display_name = "/" + "/".join(name_path[1:])
         
         if 'states' in state_data:
-            if 'initial' not in state_data and not state_data.get('parallel', False):
+            # CHANGED: Check 'orthogonal' instead of 'parallel'
+            if 'initial' not in state_data and not state_data.get('orthogonal', False):
                 errors.append(f"State '{display_name}' is composite but missing 'initial' property.")
             elif 'initial' in state_data:
                 init = state_data['initial']
@@ -47,7 +48,6 @@ def validate_model(data):
             
             raw_target = t['to']
             
-            # --- FIX: Allow Termination (null target) ---
             if raw_target is None or raw_target == "null":
                 continue
 
