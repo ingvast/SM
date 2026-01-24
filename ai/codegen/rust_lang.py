@@ -329,14 +329,13 @@ class RustGenerator:
 
             # --- CROSS-LIMB ORTHOGONAL CHECK ---
             is_cross_limb = False
-            lca_data = resolve_state_data(self.data, name_path[:lca_index+1])
+            # FIXED: Slice up to lca_index to get the CONTAINER, not the divergent child
+            lca_data = resolve_state_data(self.data, name_path[:lca_index])
             
-            # Check if LCA is an orthogonal state
             if lca_data and lca_data.get('orthogonal', False):
                 # The LCA is the container 'g'.
-                # We need to check if source and target are in DIFFERENT limbs.
-                # Limb index is LCA + 1
-                limb_idx = lca_index + 1
+                # Divergence happens at lca_index
+                limb_idx = lca_index
                 
                 if len(name_path) > limb_idx and len(target_path) > limb_idx:
                     source_limb = name_path[limb_idx]
@@ -344,24 +343,16 @@ class RustGenerator:
                     
                     if source_limb != target_limb:
                         is_cross_limb = True
-                        # Generate Special Cross-Limb Logic
-                        # 1. We do NOT exit source (A stays).
-                        # 2. We kill Target Limb (B resets).
-                        # 3. We Enter Target Path.
                         
-                        target_limb_path = name_path[:lca_index+1] + [target_limb]
+                        target_limb_path = name_path[:lca_index] + [target_limb]
                         target_limb_c_name = flatten_name(target_limb_path, "_")
                         
-                        # Use the Region Exit Pointer (e.g., ptr_run_g_b_region_exit)
                         code += f"{indent}    if let Some(exit_fn) = ctx.ptr_{target_limb_c_name}_region_exit {{ exit_fn(ctx); }}\n"
                         
-                        # Enter the new target
-                        # Note: We must handle forks here if they exist, but simple case first:
                         if forks is None:
                              entry_funcs = get_entry_sequence(name_path, target_path, self._fmt_entry)
                              code += "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
                         else:
-                             # Fork logic logic reuse (simplified)
                              def _fmt_entry_forced_start(path, suffix):
                                 if path == target_path:
                                     return "state_" + flatten_name(path, "_") + "_start"
@@ -374,7 +365,6 @@ class RustGenerator:
                         return code
 
             # --- IMPLICIT ORTHOGONAL / LOCAL LIMB LOGIC ---
-            # (Existing logic for implied forks / same limb check)
             if forks is None:
                 parallel_ancestor_idx = -1
                 for i in range(len(target_path)):
@@ -392,8 +382,6 @@ class RustGenerator:
                             is_same_limb = True
                     
                     if not is_same_limb:
-                        # This catches "Entering from Outside" or "Transitioning to Sibling"
-                        # But Cross-Limb was handled above. This handles entering G from root.
                         base_path_list = target_path[:parallel_ancestor_idx+1]
                         fork_parts = target_path[parallel_ancestor_idx+1:]
                         fork_str = "/".join(fork_parts)
@@ -451,6 +439,7 @@ class RustGenerator:
         return code
 
     def recurse(self, name_path, data, parent_ptrs):
+        # ... (rest of recurse remains the same, ensuring full context logic)
         try:
             my_id_num = self.state_counter
             self.state_counter += 1
