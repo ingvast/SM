@@ -1,0 +1,38 @@
+01: /run/a    -> /run/b
+02: /run/b    -> /run/a
+03: /run/a    -> /run/c
+04: /run/c/d  -> /run
+05: /run/a    -> /run/c/d
+06: /run/c/d  -> /run/c/d
+07: /run/c/d  -> /run/c/e
+08: /run/c/e/f-> /run/d
+09: /run/d/a   -> /run/d/b
+10: /run/d/b  ->  /run/a
+11: /run/a    -> /run/d
+
+paralell
+* Into praralell do a transitin and leave from within
+* Into paralell do a transition and leave from the top 
+
+12: /run/d/b  -> /run/g
+13: /run/g/[a/a,b/b] -> none, c
+14: /run/g/[a/a,b/c] -> b, a
+15: /run/g/[a/b,b/a] -> /run/a, none
+
+16: /run/a -> /run/g
+17: /run/g/[a/a,b/b] -> none, c
+18: /run/g/[a/a,b/c] -> b, a
+19: /run/g/[a/b,b/a] -> /run/a, none
+
+20: /run/a -> /run/g/[a/b,b/a]
+21: /run/g/[a/b,b/a] -> /run/a, none
+
+22: /run/a -> /run/g/a/b
+23: /run/g/[a/b,b/b] -> /run/g/b/c
+24  /run/g/[a/b,b/c] -> /done
+
+
+
+
+
+
