@@ -262,7 +262,6 @@ class RustGenerator:
 
         return header + source, ""
 
-
     def emit_transition_logic(self, name_path, t, indent_level=1):
         indent = "    " * indent_level
         code = ""
@@ -330,17 +329,10 @@ class RustGenerator:
 
             # --- CROSS-LIMB ORTHOGONAL CHECK ---
             is_cross_limb = False
-            
-            # FIX: Check the Container (path UP TO the divergence).
-            # If path is /root/run/g/a vs /root/run/g/b
-            # Divergence (lca_index) is at index 3 ('a' vs 'b').
-            # Container is [:3] -> /root/run/g
             container_path = name_path[:lca_index]
             lca_data = resolve_state_data(self.data, container_path)
             
             if lca_data and lca_data.get('orthogonal', False):
-                # The container is Orthogonal. We are switching Limbs.
-                # Limb Index is exactly the LCA Index (where they diverge).
                 limb_idx = lca_index
                 
                 if len(name_path) > limb_idx and len(target_path) > limb_idx:
@@ -350,24 +342,36 @@ class RustGenerator:
                     if source_limb != target_limb:
                         is_cross_limb = True
                         
-                        # 1. DO NOT Exit Source (A stays)
-                        
-                        # 2. Exit Target Limb (Reset B)
-                        target_limb_path = name_path[:limb_idx] + [target_limb]
+                        target_limb_path = name_path[:lca_index] + [target_limb]
                         target_limb_c_name = flatten_name(target_limb_path, "_")
-                        # Call the region exit pointer for the target limb
-                        code += f"{indent}    if let Some(exit_fn) = ctx.ptr_{target_limb_c_name}_region_exit {{ exit_fn(ctx); }}\n"
                         
-                        # 3. Enter Target Path
+                        # --- OPTIMIZED HOT-SWAP ---
+                        # If the target limb is Composite (has children) and we are targeting deeper,
+                        # we only exit the active child of the limb, keeping the limb itself active.
+                        limb_data = resolve_state_data(self.data, target_limb_path)
+                        is_composite_limb = limb_data and 'states' in limb_data
+                        is_targeting_deeper = len(target_path) > len(target_limb_path)
+                        
+                        if is_composite_limb and is_targeting_deeper:
+                            # 1. Exit active child of target limb (Keep Limb Active)
+                            code += f"{indent}    if let Some(exit_fn) = ctx.ptr_{target_limb_c_name}_exit {{ exit_fn(ctx); }}\n"
+                            # 2. Start entry from INSIDE the limb
+                            entry_source = target_limb_path
+                        else:
+                            # Standard Reset (Exit Limb -> Enter Limb)
+                            code += f"{indent}    if let Some(exit_fn) = ctx.ptr_{target_limb_c_name}_region_exit {{ exit_fn(ctx); }}\n"
+                            entry_source = container_path
+
+                        # 3. Entry Sequence
                         if forks is None:
-                             entry_funcs = get_entry_sequence(name_path, target_path, self._fmt_entry)
+                             entry_funcs = get_entry_sequence(entry_source, target_path, self._fmt_entry)
                              code += "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
                         else:
                              def _fmt_entry_forced_start(path, suffix):
                                 if path == target_path:
                                     return "state_" + flatten_name(path, "_") + "_start"
                                 return "state_" + flatten_name(path, "_") + suffix
-                             entry_funcs = get_entry_sequence(name_path, target_path, _fmt_entry_forced_start)
+                             entry_funcs = get_entry_sequence(entry_source, target_path, _fmt_entry_forced_start)
                              code += "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
                         
                         code += f"{indent}    return;\n"
@@ -375,7 +379,6 @@ class RustGenerator:
                         return code
 
             # --- IMPLICIT ORTHOGONAL / LOCAL LIMB LOGIC ---
-            # (Standard logic for entering orthogonal states from outside or staying within one limb)
             if forks is None:
                 parallel_ancestor_idx = -1
                 for i in range(len(target_path)):
@@ -450,7 +453,8 @@ class RustGenerator:
         return code
 
     def recurse(self, name_path, data, parent_ptrs):
-        # ... (rest of recurse remains the same, ensuring full context logic)
+        # ... recurse implementation remains same as previous ...
+        # (Included in full below for completeness)
         try:
             my_id_num = self.state_counter
             self.state_counter += 1
@@ -613,4 +617,3 @@ class RustGenerator:
                     first = False
 
         self.inspect_list.append(INSPECTOR_TEMPLATE.format(c_name=my_c_name, push_name=push_name, content=content))
-
