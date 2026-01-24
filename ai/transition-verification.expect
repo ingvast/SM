@@ -240,13 +240,56 @@ Testing parallel
 24: Running: /run/g/a/b
 24: Running: /run/g/b
 24: Running: /run/g/b/c
-24: Transition from /run/g/b/c to Termination
+24: Transition from /run/g/b/c to /run/h
+Trying a descision tree
 24: Exit: /run/g/b/c
 24: Exit: /run/g/b
 24: Exit: /run/g/a/b
 24: Exit: /run/g/a
 24: Exit: /run/g
-24: Exit: /run
-24: Exit: /
+24: Entry: /run/h
+24: Entry: /run/h/a
+25: /run/h/a
+25: Running: /
+25: Running: /run
+25: Running: /run/h
+25: Running: /run/h/a
+25: Transition from /run/h/a to /run/h/b
+25: Exit: /run/h/a
+25: Entry: /run/h/b
+26: /run/h/b
+26: Running: /
+26: Running: /run
+26: Running: /run/h
+26: Running: /run/h/b
+26: Transition from /run/h/b to /run/h/a
+26: Exit: /run/h/b
+26: Entry: /run/h/a
+27: /run/h/a
+27: Running: /
+27: Running: /run
+27: Running: /run/h
+27: Running: /run/h/a
+27: Transition from /run/h/a to /run/h/c
+27: Exit: /run/h/a
+27: Entry: /run/h/c
+28: /run/h/c
+28: Running: /
+28: Running: /run
+28: Running: /run/h
+28: Running: /run/h/c
+28: Transition from /run/h/c to /run/h/b
+28: Exit: /run/h/c
+28: Entry: /run/h/b
+29: /run/h/b
+29: Running: /
+29: Running: /run
+29: Running: /run/h
+29: Running: /run/h/b
+29: Transition from /run/h/b to Termination
+29: Exit: /run/h/b
+29: Exit: /run/h
+29: Exit: /run
+29: Exit: /
 Done
-25: FINISHED
+30: FINISHED
