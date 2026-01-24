@@ -261,7 +261,9 @@ class RustGenerator:
         source += "\n// --- Inspection ---\n" + "\n".join(self.inspect_list)
 
         return header + source, ""
-def emit_transition_logic(self, name_path, t, indent_level=1):
+
+
+    def emit_transition_logic(self, name_path, t, indent_level=1):
         indent = "    " * indent_level
         code = ""
         raw_target = t.get('to')
