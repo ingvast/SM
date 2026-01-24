@@ -282,10 +282,7 @@ class RustGenerator:
         code += f"{indent}if {test_cond} {{\n"
         
         # --- NEW: TRANSITION HOOK LOGIC ---
-        # 1. Determine Source Name
         src_str = "/" + "/".join(name_path[1:])
-        
-        # 2. Determine Target Name (before generating logic code)
         dst_str = "???"
         is_termination = False
         
@@ -294,19 +291,14 @@ class RustGenerator:
             is_termination = True
         elif raw_target in self.decisions:
             dst_str = f"Decision({raw_target})" 
-            # Note: For decisions, we don't trigger the hook HERE.
-            # We recurse, and the hook triggers at the leaf of the decision tree.
         else:
             base_target, forks = parse_fork_target(raw_target)
             target_path = resolve_target_path(name_path, base_target)
-            
-            # If forks, append them for clarity in logging
             if forks:
                 dst_str = "/" + "/".join(target_path[1:]) + str(forks)
             else:
                 dst_str = "/" + "/".join(target_path[1:])
 
-        # 3. Inject Hook (Only if not a decision node, as decisions will recurse)
         hook_code = self.hooks.get('transition', '')
         if raw_target not in self.decisions:
              code += f'{indent}    let t_src = "{src_str}";\n'
@@ -317,13 +309,11 @@ class RustGenerator:
 
         code += f"{indent}    ctx.transition_fired = true;\n"
         
-        # --- Action Code ---
         action_code = t.get('action')
         if action_code:
              formatted_action = "\n".join([f"{indent}    {line}" for line in action_code.splitlines()])
              code += formatted_action + "\n"
 
-        # --- Transition Logic ---
         if is_termination:
             exit_funcs = get_exit_sequence(name_path, ['root'], self._fmt_func)
             code += "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
@@ -339,6 +329,7 @@ class RustGenerator:
             base_target, forks = parse_fork_target(raw_target)
             target_path = resolve_target_path(name_path, base_target)
 
+            # --- IMPLICIT ORTHOGONAL DETECTION (FIXED) ---
             if forks is None:
                 parallel_ancestor_idx = -1
                 for i in range(len(target_path)):
@@ -348,13 +339,29 @@ class RustGenerator:
                         parallel_ancestor_idx = i
                         break
                 
+                # Check if we found a parallel ancestor
                 if parallel_ancestor_idx != -1 and parallel_ancestor_idx < len(target_path) - 1:
-                    base_path_list = target_path[:parallel_ancestor_idx+1]
-                    fork_parts = target_path[parallel_ancestor_idx+1:]
-                    fork_str = "/".join(fork_parts)
-                    target_path = base_path_list
-                    forks = [fork_str]
-                    base_target = "/" + "/".join(base_path_list[1:])
+                    # KEY FIX: Check if we are TRANSITIONING WITHIN THE SAME LIMB.
+                    # If source and target share the same path up to the limb (child of parallel),
+                    # then this is a local transition. We should NOT trigger the global fork logic.
+                    
+                    # Limb index is one deeper than the parallel container
+                    limb_idx = parallel_ancestor_idx + 1
+                    
+                    is_same_limb = False
+                    if len(name_path) > limb_idx:
+                        # Check if the "Limb Name" (e.g., 'a' or 'b') is identical
+                        if name_path[limb_idx] == target_path[limb_idx]:
+                            is_same_limb = True
+                    
+                    if not is_same_limb:
+                        # Only rewrite if we are crossing limbs or entering from outside
+                        base_path_list = target_path[:parallel_ancestor_idx+1]
+                        fork_parts = target_path[parallel_ancestor_idx+1:]
+                        fork_str = "/".join(fork_parts)
+                        target_path = base_path_list
+                        forks = [fork_str]
+                        base_target = "/" + "/".join(base_path_list[1:])
 
             exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
             code += "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
