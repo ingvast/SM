@@ -44,3 +44,4 @@ view:
 
 clean:
 	rm -f *.o statemachine.c statemachine.h statemachine.dot statemachine.png
+	rm -f manual.{aux,log,out,toc}

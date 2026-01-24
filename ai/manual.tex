@@ -130,7 +130,7 @@ fn main() {
 \subsection{Public API Methods}
 These methods are available on the \texttt{StateMachine} instance (\texttt{sm}) or its context (\texttt{ctx}).
 
-\begin{longtable}{@{}lll@{}}
+\begin{longtable}{@{}llp{8cm}@{}}
 \toprule
 \textbf{Function} & \textbf{Location} & \textbf{Description} \\
 \midrule
@@ -142,55 +142,64 @@ These methods are available on the \texttt{StateMachine} instance (\texttt{sm}) 
 \bottomrule
 \end{longtable}
 
-\textbf{Example Usage of \texttt{in\_state}:}
-Inside a guard or action, you can check peer states:
-\begin{lstlisting}[language=Rust]
-guard: ctx.in_state_heater_on() && ctx.temperature > 50.0
-\end{lstlisting}
+\section{Writing Logic: Handlers vs. Hooks}
 
-\section{Writing Code in Hooks \& Actions}
-All logic hooks (\texttt{entry}, \texttt{do}, \texttt{exit}, \texttt{action}) allow you to write Rust code directly.
+\subsection{Local Handlers (Per State/Transition)}
+These are defined inside specific states or transitions in the YAML. They apply only to that specific element.
 
-\subsection{Available Variables}
+\begin{itemize}
+    \item \textbf{\texttt{entry}}: Runs once when entering the specific state.
+    \item \textbf{\texttt{do}}: Runs every tick while in the specific state.
+    \item \textbf{\texttt{exit}}: Runs once when leaving the specific state.
+    \item \textbf{\texttt{action}}: Runs during a specific transition (see Section 5).
+\end{itemize}
+
+\subsection{Global Hooks (System-wide)}
+Hooks are defined at the root level under the \texttt{hooks:} key. They allow you to inject code into \textbf{every} occurrence of an event type across the entire machine (e.g., for logging).
+
+\begin{longtable}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Hook Key} & \textbf{Trigger Event} \\
+\midrule
+\endhead
+\texttt{hooks: entry} & Injected into \textbf{all} states' entry handlers. \\
+\texttt{hooks: do} & Injected into \textbf{all} states' do handlers. \\
+\texttt{hooks: exit} & Injected into \textbf{all} states' exit handlers. \\
+\texttt{hooks: transition} & Injected into \textbf{all} transitions (equivalent to a global Action). \\
+\bottomrule
+\end{longtable}
+
+\textbf{Note:} There is no \texttt{hooks: action}. Use \texttt{hooks: transition} instead.
+
+\subsection{Available Variables in Code Blocks}
 The following variables are injected into the scope of your Rust snippets:
 
-\begin{longtable}{@{}p{2.5cm}p{3.5cm}p{3cm}p{6cm}@{}}
+\begin{longtable}{@{}lllp{6cm}@{}}
 \toprule
-\textbf{Variable} & \textbf{Type} & \textbf{Availability} & \textbf{Description} \\
+\textbf{Variable} & \textbf{Type} & \textbf{Scope} & \textbf{Description} \\
 \midrule
 \endhead
 \texttt{ctx} & \texttt{\&mut Context} & All & The shared context struct holding your data. \\
 \texttt{time} & \texttt{f64} & All & Time elapsed (seconds) since entering the current state. \\
-\texttt{t\_src} & \texttt{\&str} & Action / Hook & The full path of the state being left. \\
-\texttt{t\_dst} & \texttt{\&str} & Action / Hook & The full path of the target state. \\
+\texttt{t\_src} & \texttt{\&str} & Action/Trans. & The full path of the state being left. \\
+\texttt{t\_dst} & \texttt{\&str} & Action/Trans. & The full path of the target state. \\
 \bottomrule
 \end{longtable}
-
-\textit{Note: \texttt{t\_dst} is not available if the transition targets a Decision Tree, as the final destination is not yet known.}
 
 \section{Transitions}
 A transition determines how the machine moves.
 
-\subsection{Transition Flow}
-When a transition fires:
-\begin{enumerate}
-    \item \textbf{Guard Check:} Is the condition true?
-    \item \textbf{Action Execution:} Run the \texttt{action} code.
-    \item \textbf{Exit Chain:} Run \texttt{exit} hooks for source state and parents.
-    \item \textbf{Entry Chain:} Run \texttt{entry} hooks for target hierarchy.
-    \item \textbf{Initialization:} Run \texttt{initial} transitions for composite targets.
-\end{enumerate}
-
 \subsection{Using Actions (The Mealy Aspect)}
-The \texttt{action} keyword allows you to execute code \textit{during} the transition, before the old state is exited. This is ideal for logging, sending messages, or arithmetic that depends on the transition event itself.
+The \texttt{action} keyword allows you to execute code \textit{during} the transition, before the old state is exited.
 
 \begin{lstlisting}[language=YAML, caption={Example using Action variables}]
 states:
   reading:
     transitions:
       - guard: ctx.value > 100
+        # This code runs BEFORE reading exits
         action: |
-          println!("Alert: Moving from {} to {}", t_src, t_dst);
+          println!("Moving {} -> {}", t_src, t_dst);
           ctx.log_alert("Threshold Exceeded");
         to: alert_mode
 \end{lstlisting}
