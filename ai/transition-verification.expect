@@ -69,6 +69,9 @@ First transiton
 08: Running: /
 08: Running: /run
 08: Transition from /run to /run/d
+08: Exit: /run/c/e/f
+08: Exit: /run/c/e
+08: Exit: /run/c
 08: Entry: /run/d
 08: Entry: /run/d/a
 09: /run/d/a
@@ -121,3 +124,109 @@ Testing parallel
 13: Running: /run/g/b/b
 13: Transition from /run/g/b/b to /run/g/b/c
 13: Exit: /run/g/b/b
+13: Entry: /run/g/b/c
+14: /run/g/[a/a,b/c]
+14: Running: /
+14: Running: /run
+14: Running: /run/g
+14: Running: /run/g/a
+14: Running: /run/g/a/a
+14: Transition from /run/g/a/a to /run/g/a/b
+14: Exit: /run/g/a/a
+14: Entry: /run/g/a/b
+15: /run/g/[a/b,b/c]
+15: Running: /
+15: Running: /run
+15: Running: /run/g
+15: Running: /run/g/a
+15: Running: /run/g/a/b
+15: Transition from /run/g/a/b to /run/a
+15: Exit: /run/g/a/b
+15: Exit: /run/g/a
+15: Exit: /run/g/b/c
+15: Exit: /run/g/b
+15: Exit: /run/g
+15: Entry: /run/a
+16: /run/a
+16: Running: /
+16: Running: /run
+16: Running: /run/a
+16: Transition from /run/a to /run/g
+16: Exit: /run/a
+16: Entry: /run/g
+16: Entry: /run/g/a
+16: Entry: /run/g/a/a
+16: Entry: /run/g/b
+16: Entry: /run/g/b/b
+17: /run/g/[a/a,b/b]
+17: Running: /
+17: Running: /run
+17: Running: /run/g
+17: Running: /run/g/a
+17: Running: /run/g/a/a
+17: Running: /run/g/b
+17: Running: /run/g/b/b
+17: Transition from /run/g/b/b to /run/g/b/c
+17: Exit: /run/g/b/b
+17: Entry: /run/g/b/c
+18: /run/g/[a/a,b/c]
+18: Running: /
+18: Running: /run
+18: Running: /run/g
+18: Running: /run/g/a
+18: Running: /run/g/a/a
+18: Transition from /run/g/a/a to /run/g/a/b
+18: Exit: /run/g/a/a
+18: Entry: /run/g/a/b
+19: /run/g/[a/b,b/c]
+19: Running: /
+19: Running: /run
+19: Transition from /run to /run/a
+19: Exit: /run/g/a/b
+19: Exit: /run/g/a
+19: Exit: /run/g/b/c
+19: Exit: /run/g/b
+19: Exit: /run/g
+19: Entry: /run/a
+20: /run/a
+20: Running: /
+20: Running: /run
+20: Running: /run/a
+20: Transition from /run/a to /run/g['a/b', 'b/a']
+20: Exit: /run/a
+20: Entry: /run/g
+20: Entry: /run/g/a
+20: Entry: /run/g/a/b
+20: Entry: /run/g/b
+20: Entry: /run/g/b/a
+21: /run/g/[a/b,b/a]
+21: Running: /
+21: Running: /run
+21: Running: /run/g
+21: Running: /run/g/a
+21: Running: /run/g/a/b
+21: Transition from /run/g/a/b to /run/a
+21: Exit: /run/g/a/b
+21: Exit: /run/g/a
+21: Exit: /run/g/b/a
+21: Exit: /run/g/b
+21: Exit: /run/g
+21: Entry: /run/a
+22: /run/a
+22: Running: /
+22: Running: /run
+22: Running: /run/a
+22: Transition from /run/a to /run/g/a/b
+22: Exit: /run/a
+22: Entry: /run/g
+22: Entry: /run/g/a
+22: Entry: /run/g/a/b
+22: Entry: /run/g/b
+22: Entry: /run/g/b/b
+23: /run/g/[a/b,b/b]
+23: Running: /
+23: Running: /run
+23: Running: /run/g
+23: Running: /run/g/a
+23: Running: /run/g/a/b
+23: Transition from /run/g/a/b to /run/g/b/c

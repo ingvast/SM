@@ -1,4 +1,4 @@
-from .common import flatten_name, resolve_target_path, get_exit_sequence, get_entry_sequence, parse_fork_target, resolve_state_data
+from .common import flatten_name, resolve_target_path, get_exit_sequence, get_entry_sequence, parse_fork_target, resolve_state_data, get_lca_index
 import sys
 
 HEADER = """
@@ -220,13 +220,9 @@ class RustGenerator:
         self.outputs = {'context_ptrs': [], 'context_init': [], 'functions': [], 'impls': []}
         self.inspect_list = []
         self.decisions = data.get('decisions', {})
-        
-        # CHANGED: Ensure we read hooks correctly even if nested or root
         self.hooks = data.get('hooks', {})
-        # Fallback if user put them at root level (which is nicer)
         if 'transition' not in self.hooks and 'transition' in data:
              self.hooks['transition'] = data['transition']
-             
         self.includes = data.get('includes', '')
 
     def _fmt_func(self, path):
@@ -281,7 +277,6 @@ class RustGenerator:
 
         code += f"{indent}if {test_cond} {{\n"
         
-        # --- NEW: TRANSITION HOOK LOGIC ---
         src_str = "/" + "/".join(name_path[1:])
         dst_str = "???"
         is_termination = False
@@ -328,8 +323,58 @@ class RustGenerator:
         else:
             base_target, forks = parse_fork_target(raw_target)
             target_path = resolve_target_path(name_path, base_target)
+            
+            # LCA calculation
+            lca_index = get_lca_index(name_path, target_path)
 
-            # --- IMPLICIT ORTHOGONAL DETECTION (FIXED) ---
+            # --- CROSS-LIMB ORTHOGONAL CHECK ---
+            is_cross_limb = False
+            lca_data = resolve_state_data(self.data, name_path[:lca_index+1])
+            
+            # Check if LCA is an orthogonal state
+            if lca_data and lca_data.get('orthogonal', False):
+                # The LCA is the container 'g'.
+                # We need to check if source and target are in DIFFERENT limbs.
+                # Limb index is LCA + 1
+                limb_idx = lca_index + 1
+                
+                if len(name_path) > limb_idx and len(target_path) > limb_idx:
+                    source_limb = name_path[limb_idx]
+                    target_limb = target_path[limb_idx]
+                    
+                    if source_limb != target_limb:
+                        is_cross_limb = True
+                        # Generate Special Cross-Limb Logic
+                        # 1. We do NOT exit source (A stays).
+                        # 2. We kill Target Limb (B resets).
+                        # 3. We Enter Target Path.
+                        
+                        target_limb_path = name_path[:lca_index+1] + [target_limb]
+                        target_limb_c_name = flatten_name(target_limb_path, "_")
+                        
+                        # Use the Region Exit Pointer (e.g., ptr_run_g_b_region_exit)
+                        code += f"{indent}    if let Some(exit_fn) = ctx.ptr_{target_limb_c_name}_region_exit {{ exit_fn(ctx); }}\n"
+                        
+                        # Enter the new target
+                        # Note: We must handle forks here if they exist, but simple case first:
+                        if forks is None:
+                             entry_funcs = get_entry_sequence(name_path, target_path, self._fmt_entry)
+                             code += "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
+                        else:
+                             # Fork logic logic reuse (simplified)
+                             def _fmt_entry_forced_start(path, suffix):
+                                if path == target_path:
+                                    return "state_" + flatten_name(path, "_") + "_start"
+                                return "state_" + flatten_name(path, "_") + suffix
+                             entry_funcs = get_entry_sequence(name_path, target_path, _fmt_entry_forced_start)
+                             code += "".join([f"{indent}    {fn}(ctx);\n" for fn in entry_funcs])
+                        
+                        code += f"{indent}    return;\n"
+                        code += f"{indent}}}\n"
+                        return code
+
+            # --- IMPLICIT ORTHOGONAL / LOCAL LIMB LOGIC ---
+            # (Existing logic for implied forks / same limb check)
             if forks is None:
                 parallel_ancestor_idx = -1
                 for i in range(len(target_path)):
@@ -339,23 +384,16 @@ class RustGenerator:
                         parallel_ancestor_idx = i
                         break
                 
-                # Check if we found a parallel ancestor
                 if parallel_ancestor_idx != -1 and parallel_ancestor_idx < len(target_path) - 1:
-                    # KEY FIX: Check if we are TRANSITIONING WITHIN THE SAME LIMB.
-                    # If source and target share the same path up to the limb (child of parallel),
-                    # then this is a local transition. We should NOT trigger the global fork logic.
-                    
-                    # Limb index is one deeper than the parallel container
                     limb_idx = parallel_ancestor_idx + 1
-                    
                     is_same_limb = False
                     if len(name_path) > limb_idx:
-                        # Check if the "Limb Name" (e.g., 'a' or 'b') is identical
                         if name_path[limb_idx] == target_path[limb_idx]:
                             is_same_limb = True
                     
                     if not is_same_limb:
-                        # Only rewrite if we are crossing limbs or entering from outside
+                        # This catches "Entering from Outside" or "Transitioning to Sibling"
+                        # But Cross-Limb was handled above. This handles entering G from root.
                         base_path_list = target_path[:parallel_ancestor_idx+1]
                         fork_parts = target_path[parallel_ancestor_idx+1:]
                         fork_str = "/".join(fork_parts)
@@ -363,6 +401,14 @@ class RustGenerator:
                         forks = [fork_str]
                         base_target = "/" + "/".join(base_path_list[1:])
 
+            # --- DYNAMIC CHILD EXIT FIX (For Container Transitions) ---
+            if lca_index >= len(name_path):
+                 my_data = resolve_state_data(self.data, name_path)
+                 if my_data and 'states' in my_data and not my_data.get('orthogonal', False):
+                      my_c_name = flatten_name(name_path, "_")
+                      code += f"{indent}    if let Some(exit_fn) = ctx.ptr_{my_c_name}_exit {{ exit_fn(ctx); }}\n"
+
+            # --- Standard Exit Sequence ---
             exit_funcs = get_exit_sequence(name_path, target_path, self._fmt_func)
             code += "".join([f"{indent}    {fn}(ctx);\n" for fn in exit_funcs])
 
@@ -567,3 +613,4 @@ class RustGenerator:
                     first = False
 
         self.inspect_list.append(INSPECTOR_TEMPLATE.format(c_name=my_c_name, push_name=push_name, content=content))
+
