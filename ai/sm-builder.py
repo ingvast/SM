@@ -13,6 +13,30 @@ from codegen.rust_lang import RustGenerator
 class BuildError(Exception):
     pass
 
+def collect_decisions(data):
+    """Walk the state tree and collect all decisions: into a single flat dict.
+    Merges with root-level decisions. Errors on duplicate names."""
+    merged = dict(data.get('decisions', {}) or {})
+
+    def walk(states):
+        if not states:
+            return
+        for name, state_data in states.items():
+            if not isinstance(state_data, dict):
+                continue
+            local = state_data.get('decisions')
+            if local:
+                for dname, dval in local.items():
+                    if dname in merged:
+                        print(f"\nERROR: Duplicate decision name '{dname}' found in state '{name}'.")
+                        sys.exit(1)
+                    merged[dname] = dval
+                del state_data['decisions']
+            walk(state_data.get('states'))
+
+    walk(data.get('states'))
+    data['decisions'] = merged
+
 def get_state_data(root_data, path_parts):
     current = {'states': root_data.get('states', {}), 'initial': root_data.get('initial')}
     if path_parts == ['root']:
@@ -109,6 +133,7 @@ def main():
     except yaml.YAMLError as e:
         sys.exit(f"YAML Syntax Error: {e}")
 
+    collect_decisions(data)
     validate_model(data)
 
     decisions = data.get('decisions', {})
