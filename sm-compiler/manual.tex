@@ -80,14 +80,14 @@
 This tool generates a safety-critical Hierarchical State Machine (HSM) in Rust from a YAML definition. It supports advanced features like orthogonal regions (parallelism), history patterns, and complex decision trees.
 
 \section{Generating the Code}
-The generator is a Python script (\texttt{sm-builder.py}) that validates your model and produces Rust code.
+The generator is a Python script (\texttt{sm-compiler.py}) that validates your model and produces Rust code.
 
 \begin{lstlisting}[language=Bash, caption=Command Line Usage]
 # Basic Usage
-python3 sm-builder.py model.yaml
+python3 sm-compiler.py model.yaml
 
 # Specify Output Language (Default is Rust)
-python3 sm-builder.py model.yaml --lang rust
+python3 sm-compiler.py model.yaml --lang rust
 \end{lstlisting}
 
 \subsection{Outputs}

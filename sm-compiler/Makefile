@@ -3,7 +3,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g -I.
 
 # Tools
-GENERATOR = sm-builder.py
+GENERATOR = sm-compiler.py
 MAIN_SRC = main.c
 
 # ---------------------------------------------------------
